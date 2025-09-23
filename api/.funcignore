@@ -1,0 +1,8 @@
+local.settings.json
+*.pyc
+__pycache__/
+.env
+.git/
+.gitignore
+.vscode/
+README.md

@@ -1,0 +1,35 @@
+# General
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
+*.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.python_packages/
+api/.python_packages/
+.env
+venv/
+
+# Azure Functions local settings
+api/local.settings.json
+
+# Node / Frontend (if added later)
+node_modules/
+dist/
+build/
+.swa/
+
+# Coverage & reports
+.coverage
+coverage/
+pytest.cache/
+
+# OS
+desktop.ini
+
+# Misc
+*.swp
+*.orig

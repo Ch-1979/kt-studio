@@ -1,0 +1,67 @@
+# Azure Static Web Apps CI/CD
+# Docs: https://learn.microsoft.com/azure/static-web-apps/
+
+name: Azure Static Web Apps CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - main
+      - master
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    name: Build and Deploy Job
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect default branch
+        id: detect_branch
+        run: |
+          if [ "${GITHUB_REF##*/}" = "master" ]; then echo "branch=master" >> $GITHUB_OUTPUT; else echo "branch=main" >> $GITHUB_OUTPUT; fi
+
+      - name: Setup Python for Functions API
+        uses: actions/setup-python@v5
+        with:
+            python-version: '3.11'
+
+      - name: Install Functions API deps
+        working-directory: api
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt -t .python_packages/lib/site-packages; fi
+
+      - name: Upload API build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api_artifact
+          path: api
+
+      - name: Deploy to Azure Static Web Apps
+        id: deploy
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }} # Used for Github integrations (i.e., PR comments)
+          action: 'upload'
+          #### App (frontend) settings
+          app_location: '/'                 # Root (where index.html lives)
+          output_location: '/'              # No build output (static)
+          #### API settings
+          api_location: 'api'               # Azure Functions folder
+          #### Skips build since no node build step
+          skip_app_build: true
+          skip_api_build: true
+        env:
+          #### Optional environment variables
+          FUNCTIONS_WORKER_RUNTIME: python
+
+      - name: Deployment summary
+        run: |
+          echo "Deployment complete. Check Azure Portal for the Static Web App URL or see the GitHub Action run summary."

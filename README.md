@@ -169,3 +169,59 @@ You can later replace simulated steps with real calls:
 For enhancements or backend wiring, create an issue or extend the code with modules (`/js`, `/assets`, etc.).
 
 Enjoy building the full platform! 🚀
+
+---
+## 🔧 Fixing Failed GitHub Action: Missing `AZURE_STATIC_WEB_APPS_API_TOKEN`
+If your GitHub Action run ("Azure Static Web Apps CI/CD") failed with an error like:
+
+```
+Error: Input required and not supplied: azure_static_web_apps_api_token
+```
+
+that means the deployment token secret isn’t set yet. Add it once and future pushes will deploy automatically.
+
+### 1. Get the Deployment Token
+1. In Azure Portal open your Static Web App resource.
+2. Left menu: Settings (or Security) → Deployment token.
+3. Click Copy.
+
+### 2. Add GitHub Repository Secret
+1. Open your repo on GitHub → Settings → Secrets and variables → Actions.
+2. Click "New repository secret".
+3. Name: `AZURE_STATIC_WEB_APPS_API_TOKEN`
+4. Value: (paste the token you copied)
+5. Save.
+
+### 3. Re-run the Workflow
+Option A: On the failed workflow run page click "Re-run jobs".
+
+Option B (trigger new run): Make a tiny commit and push:
+```powershell
+Add-Content -Path README.md -Value "`nRedeploy: $(Get-Date -Format o)"; git add README.md; git commit -m "chore: trigger redeploy"; git push
+```
+
+### 4. Verify Success
+Open the new run → ensure the step "Deploy to Azure Static Web Apps" is green. Near the end of logs a URL like:
+
+```
+https://<random-name>.azurestaticapps.net
+```
+
+Test endpoints:
+```
+https://<random-name>.azurestaticapps.net/api/ping
+https://<random-name>.azurestaticapps.net/api/quiz/sample
+```
+
+### 5. Common Pitfalls
+| Symptom | Fix |
+|---------|-----|
+| Still missing token after adding | Secret name must be EXACT: `AZURE_STATIC_WEB_APPS_API_TOKEN` |
+| 401/403 Unauthorized | Regenerate token in portal and update secret |
+| API 404 | Wait ~1–2 min (Functions cold start) or confirm `api/` deployed |
+| Old workflow also present | Remove/rename extra auto-generated workflow to avoid double runs |
+
+### 6. (Optional) Rotate Token
+If compromised: Portal → Regenerate, update GitHub secret, re-run.
+
+---

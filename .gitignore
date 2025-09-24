@@ -34,3 +34,7 @@ desktop.ini
 # Misc
 *.swp
 *.orig
+
+# C# Functions build artifacts
+csharp-functions/bin/
+csharp-functions/obj/

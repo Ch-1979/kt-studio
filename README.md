@@ -14,6 +14,8 @@ No real backend, storage, AI, or video generation is wired in yet—this is the 
 - `index.html` – Page structure & layout
 - `style.css` – Styling (cards, grid layout, dark video area, responsive tweaks)
 - `script.js` – UI state simulation (upload → processing → ready → quiz)
+- `api/` – Python Azure Functions (quiz + ping)
+- `csharp-functions/` – C# isolated Azure Functions (Blob-trigger pipeline scaffold)
 
 ---
 ## 🚀 How to Run Locally
@@ -154,6 +156,22 @@ You can later replace simulated steps with real calls:
 | No external runtime required | ✅ |
 | Simulated state flows work | ✅ |
 | Error handling (basic) | Minimal (OK for MVP) |
+| C# pipeline scaffold present | ✅ (not wired into deployment) |
+
+---
+## 🧵 Multiple Deployment Workflows (Clean Up Advice)
+You currently have TWO GitHub Actions workflows for Azure Static Web Apps:
+
+1. `azure-static-web-app.yml` (custom – supports Python API + future build tweaks)
+2. Auto-generated `azure-static-web-apps-<name>.yml` (added by Azure portal – no API configured)
+
+Recommendation: keep ONLY the custom one so the Python API keeps deploying. To remove the auto one:
+```
+git rm .github/workflows/azure-static-web-apps-*.yml
+git commit -m "chore: remove auto-generated SWA workflow"
+git push
+```
+Then ensure the secret `AZURE_STATIC_WEB_APPS_API_TOKEN` exists (or recreate via portal). Future pushes will use the custom workflow.
 
 ---
 ## ❓ Troubleshooting

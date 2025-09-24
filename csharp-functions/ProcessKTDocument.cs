@@ -1,27 +1,21 @@
 using System.Text;
-using Azure.AI.OpenAI;
-using Azure.Storage.Blobs;
-using Azure.Storage.Blobs.Specialized;
-using Microsoft.Azure.Functions.Worker;
-using Microsoft.Extensions.Logging;
-using Microsoft.CognitiveServices.Speech;
-using Microsoft.CognitiveServices.Speech.Audio;
-using Azure.Storage.Blobs.Models;
 using System.Text.Json;
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
+using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace KTStudio.Functions;
 
 public class ProcessKTDocument
 {
-    private readonly OpenAIClient? _openAI;
     private readonly BlobServiceClient _blobServiceClient;
     private readonly ILogger<ProcessKTDocument> _logger;
     private readonly IConfiguration _config;
 
-    public ProcessKTDocument(OpenAIClient? openAI, BlobServiceClient blobServiceClient, ILogger<ProcessKTDocument> logger, IConfiguration config)
+    public ProcessKTDocument(BlobServiceClient blobServiceClient, ILogger<ProcessKTDocument> logger, IConfiguration config)
     {
-        _openAI = openAI;
         _blobServiceClient = blobServiceClient;
         _logger = logger;
         _config = config;
@@ -32,34 +26,25 @@ public class ProcessKTDocument
     {
         _logger.LogInformation("Triggered ProcessKTDocument for blob: {BlobName}", name);
 
-        // 1. Read blob contents
-        string documentText = await ReadBlobTextAsync(blobClient);
+        var documentText = await ReadBlobTextAsync(blobClient);
         _logger.LogInformation("Read {Length} chars from document", documentText.Length);
 
-        // 2. Generate script & quiz via Azure OpenAI (fallback if not configured)
-        var generation = await GenerateContentAsync(documentText);
+        var (summary, scenes, quiz) = GenerateContent(documentText);
 
-        // 3. Generate audio per scene
-        var audioFiles = await GenerateAudioAsync(generation.ScriptScenes);
-
-        // 4. Build video JSON & quiz JSON
         var videoJson = new
         {
             sourceDocument = name,
-            summary = generation.Summary,
-            scenes = generation.ScriptScenes.Select((s, i) => new { index = i + 1, text = s, audioFile = audioFiles.ElementAtOrDefault(i) }),
-            createdUtc = DateTime.UtcNow,
-            audioContainer = "generated-audio"
+            summary,
+            scenes = scenes.Select((s, i) => new { index = i + 1, text = s }),
+            createdUtc = DateTime.UtcNow
         };
-
         var quizJson = new
         {
             sourceDocument = name,
             createdUtc = DateTime.UtcNow,
-            questions = generation.Quiz
+            questions = quiz
         };
 
-        // 5. Persist artifacts
         await UploadJsonAsync("generated-videos", Path.ChangeExtension(name, ".video.json"), videoJson);
         await UploadJsonAsync("quiz-data", Path.ChangeExtension(name, ".quiz.json"), quizJson);
 
@@ -73,113 +58,28 @@ public class ProcessKTDocument
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    private async Task<(string Summary, List<string> ScriptScenes, List<object> Quiz)> GenerateContentAsync(string documentText)
+    private (string Summary, List<string> Scenes, List<object> Quiz) GenerateContent(string documentText)
     {
-        var defaultResult = (Summary: "(OpenAI not configured) Sample summary.", ScriptScenes: new List<string>{"Scene 1 placeholder","Scene 2 placeholder"}, Quiz: new List<object>{ new { question = "Placeholder question?", options = new[]{"A","B","C","D"}, correctIndex = 1 } });
-
-        if (_openAI == null)
-            return defaultResult;
-
-        try
+        // Extremely simple deterministic fallback: split into paragraphs, cap at 6 scenes.
+        var paragraphs = documentText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(p => p.Trim())
+            .Where(p => p.Length > 10)
+            .Take(6)
+            .ToList();
+        if (paragraphs.Count == 0)
         {
-            var deployment = _config["AzureOpenAI:Deployment"] ?? _config["AzureOpenAI:Model"];
-            if (string.IsNullOrWhiteSpace(deployment))
-                return defaultResult;
-
-            var prompt = $@"You are a system that transforms internal knowledge transfer documents into:
-1) A concise executive summary (max 120 words)
-2) A structured video script divided into clear SCENES (each <= 70 words)
-3) A short quiz: 3 multiple-choice questions with 4 options and an integer correctIndex.
-
-Return JSON with keys: summary, scenes (array of strings), quiz (array of objects: question, options[], correctIndex).
-
-Document Content:
----
-{documentText}
----";
-
-
-            // Fallback simplistic content generation that does not rely on Azure OpenAI types (to ensure build success).
-            // Later: re-enable real OpenAI call once SDK API surface is confirmed (ChatMessage type mismatch currently failing build).
-            var paragraphs = documentText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(p => p.Trim())
-                .Where(p => p.Length > 10)
-                .Take(6)
-                .ToList();
-            if (paragraphs.Count == 0)
-            {
-                paragraphs.Add("This document did not contain enough textual content for automated scene extraction. Placeholder scene 1.");
-                paragraphs.Add("Placeholder scene 2 with generic instructional narration.");
-            }
-            var summary = paragraphs.First().Length > 160 ? paragraphs.First().Substring(0, 160) + "..." : paragraphs.First();
-            var quiz = new List<object>
-            {
-                new { question = "Was this content auto-generated due to missing OpenAI config?", options = new[]{"Yes","No","Partially","Not sure"}, correctIndex = 0 },
-                new { question = "How many scenes were derived from the document?", options = new[]{"1","2","3 or more","None"}, correctIndex = paragraphs.Count >= 3 ? 2 : 1 },
-                new { question = "What should you configure next for richer content?", options = new[]{"Azure OpenAI","Redis","Kubernetes","FTP"}, correctIndex = 0 }
-            };
-            return (summary, paragraphs, quiz);
+            paragraphs.Add("The uploaded document had insufficient textual content; this is a placeholder scene.");
+            paragraphs.Add("Add more meaningful text to generate richer scenes and quizzes.");
         }
-        catch (Exception ex)
+        var summarySource = paragraphs.First();
+        var summary = summarySource.Length > 160 ? summarySource.Substring(0, 160) + "..." : summarySource;
+        var quiz = new List<object>
         {
-            _logger.LogWarning(ex, "OpenAI generation failed, using fallback content");
-            return defaultResult;
-        }
-    }
-
-    private async Task<List<string>> GenerateAudioAsync(List<string> scenes)
-    {
-        var results = new List<string>();
-        var speechKey = _config["Speech:ApiKey"];
-        var speechRegion = _config["Speech:Region"];
-        if (string.IsNullOrWhiteSpace(speechKey) || string.IsNullOrWhiteSpace(speechRegion))
-        {
-            return scenes.Select((s, i) => $"(no-audio-scene-{i+1}.txt)").ToList();
-        }
-        var container = _blobServiceClient.GetBlobContainerClient("generated-audio");
-        await container.CreateIfNotExistsAsync(PublicAccessType.None);
-
-        var config = SpeechConfig.FromSubscription(speechKey, speechRegion);
-        config.SpeechSynthesisVoiceName = _config["Speech:Voice"] ?? "en-US-JennyNeural";
-
-        for (int i = 0; i < scenes.Count; i++)
-        {
-            var scene = scenes[i];
-            var fileName = $"{Guid.NewGuid():N}-scene{i+1}.mp3";
-            try
-            {
-                // Use default audio output to memory (PullAudioOutputStream isn't required for simple usage)
-                using var audioOut = AudioConfig.FromDefaultSpeakerOutput();
-                using var synthesizer = new SpeechSynthesizer(config, audioOut);
-                var result = await synthesizer.SpeakTextAsync(scene);
-                if (result.Reason == ResultReason.SynthesizingAudioCompleted)
-                {
-                    var audioData = result.AudioData;
-                    if (audioData != null && audioData.Length > 0)
-                    {
-                        using var ms = new MemoryStream(audioData);
-                        var blob = container.GetBlobClient(fileName);
-                        await blob.UploadAsync(ms, new BlobHttpHeaders { ContentType = "audio/mpeg" });
-                        results.Add(fileName);
-                    }
-                    else
-                    {
-                        results.Add($"(tts-empty-scene-{i+1}.txt)");
-                    }
-                }
-                else
-                {
-                    _logger.LogWarning("Audio synthesis failed for scene {Index}: {Reason}", i + 1, result.Reason);
-                    results.Add($"(tts-failed-scene-{i+1}.txt)");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Error synthesizing scene {Index}", i + 1);
-                results.Add($"(tts-error-scene-{i+1}.txt)");
-            }
-        }
-        return results;
+            new { question = "Is this content generated without external AI services?", options = new[]{"Yes","No","Unsure","Partially"}, correctIndex = 0 },
+            new { question = "How many scenes were produced?", options = new[]{"1","2","3+","None"}, correctIndex = paragraphs.Count >= 3 ? 2 : (paragraphs.Count == 2 ? 1 : 0) },
+            new { question = "What can you configure later for smarter output?", options = new[]{"Azure OpenAI","FTP","POP3","SMTP"}, correctIndex = 0 }
+        };
+        return (summary, paragraphs, quiz);
     }
 
     private async Task UploadJsonAsync(string containerName, string blobName, object payload)
@@ -187,9 +87,7 @@ Document Content:
         var container = _blobServiceClient.GetBlobContainerClient(containerName);
         await container.CreateIfNotExistsAsync(PublicAccessType.None);
         var blob = container.GetBlobClient(blobName);
-        using var ms = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(payload, new JsonSerializerOptions{ WriteIndented = true }));
+        using var ms = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(payload, new JsonSerializerOptions { WriteIndented = true }));
         await blob.UploadAsync(ms, overwrite: true);
     }
 }
-
-// Removed custom PullAudioOutputStreamCallback wrapper: using direct AudioData from synthesis result.

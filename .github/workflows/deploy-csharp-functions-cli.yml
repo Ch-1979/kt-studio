@@ -1,0 +1,116 @@
+name: Deploy C# Blob Trigger Function (CLI Fallback)
+
+on:
+  workflow_dispatch:
+    inputs:
+      function_app_name:
+        description: "Azure Function App name (.NET isolated)"
+        required: true
+        default: "AIHACK-FUNCTIONAPP-GRP03-DOTNET"
+      publish_profile_secret:
+        description: "Repo secret containing publish profile XML"
+        required: true
+        default: "AZURE_FUNCTIONAPP_PUBLISH_PROFILE"
+
+jobs:
+  build-zipdeploy:
+    name: Build & ZIP Deploy (Fallback Path)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dotnet Info
+        run: dotnet --info || echo "dotnet not installed yet"
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        working-directory: csharp-functions
+        run: dotnet restore
+
+      - name: Build (Release)
+        working-directory: csharp-functions
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Publish (Release)
+        working-directory: csharp-functions
+        run: dotnet publish ProcessKTDocumentFunction.csproj -c Release --no-build
+
+      - name: Diagnostics - Inspect publish output
+        working-directory: csharp-functions/bin/Release/net8.0/publish
+        run: |
+          echo "PWD: $(pwd)"
+          ls -al
+          echo "---- host.json ----"; cat host.json || echo "host.json missing"
+          echo "---- function.json files ----"; find . -name function.json -maxdepth 4 || true
+          COUNT=$(find . -name function.json | wc -l || echo 0)
+          echo "Function json count: $COUNT"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: No function.json generated. Failing." >&2
+            exit 1
+          fi
+
+      - name: Package ZIP
+        run: |
+          PUBLISH_PATH="csharp-functions/bin/Release/net8.0/publish"
+          ls -al "$PUBLISH_PATH"
+          zip -r functionapp.zip "$PUBLISH_PATH" >/dev/null
+          echo "Created ZIP: $(ls -lh functionapp.zip)"
+        shell: bash
+
+      - name: Upload ZIP Artifact (for troubleshooting)
+        uses: actions/upload-artifact@v4
+        with:
+          name: functionapp-zip
+          path: functionapp.zip
+          retention-days: 3
+
+      - name: Perform ZipDeploy via publish profile (Kudu)
+        env:
+          PUBLISH_PROFILE: ${{ secrets[github.event.inputs.publish_profile_secret] }}
+          FUNC_APP: ${{ github.event.inputs.function_app_name }}
+        run: |
+          set -e
+          echo "Parsing publish profile (suppressing secrets)..."
+          echo "$PUBLISH_PROFILE" > pp.xml
+          # Extract values WITHOUT echoing the whole XML
+          USER=$(grep -oP 'userName="\K[^"]+' pp.xml | head -1)
+          PASS=$(grep -oP 'userPWD="\K[^"]+' pp.xml | head -1)
+          PUBLISH_URL=$(grep -oP 'publishUrl="\K[^"]+' pp.xml | head -1)
+          if [ -z "$USER" ] || [ -z "$PASS" ] || [ -z "$PUBLISH_URL" ]; then
+            echo "Failed to parse publish profile (missing user/pass/url)" >&2
+            exit 1
+          fi
+          echo "Using publish URL: $PUBLISH_URL" | sed 's/:.*//' # trim after colon for log
+          echo "Deploying ZIP via Kudu ZipDeploy API..."
+          HTTP_CODE=$(curl -s -o deploy_response.json -w '%{http_code}' -u "$USER:$PASS" \
+            -X POST "https://$PUBLISH_URL/api/zipdeploy" \
+            --data-binary @functionapp.zip \
+            -H 'Content-Type: application/zip') || true
+          echo "ZipDeploy HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "202" ]; then
+            echo "ZipDeploy failed. Response body:" >&2
+            cat deploy_response.json >&2 || true
+            exit 1
+          fi
+          echo "ZipDeploy accepted. Polling deployment status..."
+          # Poll deployment status
+          STATUS_URL="https://$PUBLISH_URL/api/deployments/latest"
+          for i in {1..15}; do
+            sleep 4
+            curl -s -u "$USER:$PASS" "$STATUS_URL" -o status.json || true
+            STATE=$(grep -o 'status.:.[0-9]*' status.json | head -1 | grep -o '[0-9]*' || echo "")
+            echo "Poll $i state=$STATE"
+            if grep -q '"complete"' status.json; then
+              echo "Deployment complete."; break
+            fi
+          done
+          echo "Final deployment status (truncated):"; head -c 2000 status.json || true
+
+      - name: Reminder
+        run: |
+          echo "If the function still doesn't appear, verify the Function App runtime is .NET 8 Isolated and AzureWebJobsStorage is correctly set."

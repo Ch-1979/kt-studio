@@ -8,6 +8,7 @@ using Microsoft.CognitiveServices.Speech;
 using Microsoft.CognitiveServices.Speech.Audio;
 using Azure.Storage.Blobs.Models;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 
 namespace KTStudio.Functions;
 
@@ -150,27 +151,34 @@ Document Content:
             var fileName = $"{Guid.NewGuid():N}-scene{i+1}.mp3";
             try
             {
-                using var audioOut = AudioConfig.FromStreamOutput(new PullAudioOutputStreamCallbackWrapper());
+                // Use default audio output to memory (PullAudioOutputStream isn't required for simple usage)
+                using var audioOut = AudioConfig.FromDefaultSpeakerOutput();
                 using var synthesizer = new SpeechSynthesizer(config, audioOut);
                 var result = await synthesizer.SpeakTextAsync(scene);
                 if (result.Reason == ResultReason.SynthesizingAudioCompleted)
                 {
-                    // Convert to stream and upload
                     var audioData = result.AudioData;
-                    using var ms = new MemoryStream(audioData);
-                    var blob = container.GetBlobClient(fileName);
-                    await blob.UploadAsync(ms, new BlobHttpHeaders{ ContentType = "audio/mpeg" });
-                    results.Add(fileName);
+                    if (audioData != null && audioData.Length > 0)
+                    {
+                        using var ms = new MemoryStream(audioData);
+                        var blob = container.GetBlobClient(fileName);
+                        await blob.UploadAsync(ms, new BlobHttpHeaders { ContentType = "audio/mpeg" });
+                        results.Add(fileName);
+                    }
+                    else
+                    {
+                        results.Add($"(tts-empty-scene-{i+1}.txt)");
+                    }
                 }
                 else
                 {
-                    _logger.LogWarning("Audio synthesis failed for scene {Index}: {Reason}", i+1, result.Reason);
+                    _logger.LogWarning("Audio synthesis failed for scene {Index}: {Reason}", i + 1, result.Reason);
                     results.Add($"(tts-failed-scene-{i+1}.txt)");
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Error synthesizing scene {Index}", i+1);
+                _logger.LogWarning(ex, "Error synthesizing scene {Index}", i + 1);
                 results.Add($"(tts-error-scene-{i+1}.txt)");
             }
         }
@@ -187,13 +195,4 @@ Document Content:
     }
 }
 
-// Simple wrapper to satisfy required AudioConfig; this could be replaced with a direct file output approach.
-internal class PullAudioOutputStreamCallbackWrapper : PullAudioOutputStreamCallback
-{
-    private readonly MemoryStream _buffer = new();
-    public override int Read(byte[] dataBuffer, uint size)
-    {
-        // For simplicity, not implementing streaming; TTS result provides AudioData we use instead.
-        return 0;
-    }
-}
+// Removed custom PullAudioOutputStreamCallback wrapper: using direct AudioData from synthesis result.

@@ -40,6 +40,17 @@ jobs:
         working-directory: csharp-functions
         run: dotnet publish ProcessKTDocumentFunction.csproj -c Release -o publish
 
+      - name: Diagnostics - List publish output
+        working-directory: csharp-functions/publish
+        run: |
+          echo "Listing publish directory contents:" 
+          ls -R || dir
+          echo "Check host.json:" 
+          cat host.json || type host.json
+          echo "Searching for function.json files:" 
+          find . -name function.json || echo "find not available" 
+          echo "Done diagnostics."
+
       - name: Deploy via Publish Profile
         uses: azure/functions-action@v1
         with:

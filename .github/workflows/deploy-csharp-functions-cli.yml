@@ -38,7 +38,7 @@ jobs:
 
       - name: Publish (Release)
         working-directory: csharp-functions
-        run: dotnet publish ProcessKTDocumentFunction.csproj -c Release --no-build
+        run: dotnet publish ProcessKTDocumentFunction.csproj -c Release
 
       - name: Diagnostics - Inspect publish output
         working-directory: csharp-functions/bin/Release/net8.0/publish
@@ -63,6 +63,8 @@ jobs:
               exit 1
             fi
           fi
+          echo "---- Listing root (one more time for clarity) ----"; ls -1
+          echo "---- Grep for function name in deps (sanity) ----"; grep -i ProcessKTDocument *.deps.json || true
 
       - name: Package ZIP
         run: |

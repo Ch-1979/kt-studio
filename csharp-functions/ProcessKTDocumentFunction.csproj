@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable>
     <!-- Required for isolated worker executable -->
     <OutputType>Exe</OutputType>
+    <!-- Ensure functions metadata generation is on -->
+    <GenerateFunctionsMetadata>true</GenerateFunctionsMetadata>
+    <EnableDefaultItems>true</EnableDefaultItems>
   </PropertyGroup>
   <ItemGroup>
     <!-- Minimal dependency set for reliable build -->

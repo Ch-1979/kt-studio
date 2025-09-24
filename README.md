@@ -174,6 +174,96 @@ git push
 Then ensure the secret `AZURE_STATIC_WEB_APPS_API_TOKEN` exists (or recreate via portal). Future pushes will use the custom workflow.
 
 ---
+## 🏗️ Architecture: Frontend + Python API + Background C# Processing
+| Layer | Tech | Path | Trigger / Access | Purpose |
+|-------|------|------|------------------|---------|
+| UI | Static HTML/CSS/JS | `/` | Browser | User interaction, upload simulation, video & quiz UI |
+| Lightweight HTTP API | Azure Functions (Python) | `api/` | HTTP (`/api/...`) | Quiz data, health/ping, future metadata fetch |
+| Background Processor | Azure Functions (C# isolated) | `csharp-functions/` | Blob Trigger (`uploaded-docs`) | Transform docs → summary, scenes, audio, quiz JSON |
+| Storage | Azure Blob Storage | (containers) | Blob operations | Persist raw docs & generated assets |
+
+### Why Two Function Apps?
+- Static Web Apps embedded Functions is great for HTTP routes but does NOT support Blob Triggers.
+- The C# blob-trigger function must run in a separate Function App (Consumption/Premium) bound to the same storage account.
+
+### Processing Flow (Target State)
+1. User uploads document (future: direct to `uploaded-docs` via SAS or an HTTP upload endpoint).
+2. Blob appears → C# Function `ProcessKTDocument` fires.
+3. OpenAI summary/script/quiz produced; Speech synthesizes scene audio.
+4. Artifacts written to: `generated-videos`, `generated-audio`, `quiz-data`.
+5. Frontend (via Python API or direct blob access) loads processed content for playback & quiz.
+
+### Required Blob Containers
+```
+uploaded-docs
+generated-audio
+generated-videos
+quiz-data
+```
+
+Create them (one-time) with Azure CLI:
+```powershell
+$STORAGE="<storage-account-name>"
+az storage container create --name uploaded-docs --account-name $STORAGE
+az storage container create --name generated-audio --account-name $STORAGE
+az storage container create --name generated-videos --account-name $STORAGE
+az storage container create --name quiz-data --account-name $STORAGE
+```
+
+### Deploying the C# Function Separately
+Option A (VS Code): Use Azure Functions extension → Deploy.
+
+Option B (CLI):
+```powershell
+$RG="rg-kt-studio-dev"
+$LOC="eastus"
+$APP="ktstudio-csharp-func"  # must be globally unique
+$STORAGE="<storage-account-name>"
+
+az functionapp create `
+   --resource-group $RG `
+   --consumption-plan-location $LOC `
+   --runtime dotnet-isolated `
+   --functions-version 4 `
+   --name $APP `
+   --storage-account $STORAGE
+
+dotnet publish csharp-functions/ProcessKTDocumentFunction.csproj -c Release -o publish
+cd publish
+func azure functionapp publish $APP
+```
+
+### App Settings to Configure on the C# Function App
+```powershell
+az functionapp config appsettings set -g $RG -n $APP --settings \
+   AzureOpenAI:Endpoint="https://YOUR_OPENAI_RESOURCE.openai.azure.com/" \
+   AzureOpenAI:ApiKey="<OPENAI_KEY>" \
+   AzureOpenAI:Deployment="gpt-4o-mini" \
+   Speech:ApiKey="<SPEECH_KEY>" \
+   Speech:Region="<SPEECH_REGION>" \
+   Speech:Voice="en-US-JennyNeural"
+```
+
+### Local Test of C# Processing
+```powershell
+cd csharp-functions
+func start
+Set-Content sample.txt "Sample KT onboarding doc about platform A." 
+az storage blob upload -c uploaded-docs -f sample.txt -n sample.txt --account-name <storage>
+```
+Watch console for logs; expect creation of JSON + (placeholder) audio entries.
+
+### Serving Generated Assets
+Add (future) Python HTTP endpoints:
+```
+GET /api/video/{docName}    => returns video JSON from generated-videos
+GET /api/quiz/{docName}     => returns quiz JSON from quiz-data
+```
+Or expose a listing endpoint to enumerate processed docs.
+
+---
+
+---
 ## ❓ Troubleshooting
 | Issue | Fix |
 |-------|-----|

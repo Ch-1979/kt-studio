@@ -15,6 +15,7 @@ venv/
 
 # Azure Functions local settings
 api/local.settings.json
+csharp-functions/local.settings.json
 
 # Node / Frontend (if added later)
 node_modules/

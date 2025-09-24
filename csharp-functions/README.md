@@ -1,0 +1,75 @@
+# C# Azure Functions: ProcessKTDocument
+
+This project contains a .NET 8 isolated worker Azure Functions app with a Blob Trigger function `ProcessKTDocument` that transforms an uploaded KT document into structured artifacts (summary, scenes, quiz, audio references).
+
+## Function Overview
+Trigger: Blob upload to container `uploaded-docs` (storage linked by `AzureWebJobsStorage`).
+
+Pipeline steps:
+1. Read original document text
+2. Call Azure OpenAI to produce: summary, scene script list, quiz questions
+3. For each scene, synthesize audio via Azure Cognitive Services Speech (Text-to-Speech)
+4. Store audio in container `generated-audio`
+5. Store video JSON (scenes + audio mapping) in `generated-videos`
+6. Store quiz JSON in `quiz-data`
+
+All containers are auto-created if missing (private access).
+
+## Project Structure
+- `ProcessKTDocumentFunction.csproj` – Project file & NuGet dependencies
+- `Program.cs` – Host + DI registration (OpenAI client, Blob service)
+- `ProcessKTDocument.cs` – Core function logic
+- `host.json` – Functions host configuration
+- `local.settings.json` – Local development settings (DO NOT COMMIT real secrets)
+
+## Required Settings (local.settings.json)
+```
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "AzureOpenAI:Endpoint": "https://YOUR_OPENAI_RESOURCE.openai.azure.com/",
+    "AzureOpenAI:ApiKey": "YOUR_OPENAI_KEY",
+    "AzureOpenAI:Deployment": "gpt-4o-mini",
+    "Speech:ApiKey": "YOUR_SPEECH_KEY",
+    "Speech:Region": "YOUR_SPEECH_REGION",
+    "Speech:Voice": "en-US-JennyNeural"
+  }
+}
+```
+
+Replace the placeholder values with real keys from Azure Portal.
+
+## Running Locally
+Prerequisites: .NET 8 SDK, Azure Storage Emulator (Azurite) or real storage account.
+
+1. Start Azurite (if using local): In another terminal run `azurite` (npm install -g azurite if needed)
+2. From this folder:
+```
+dotnet build
+func start
+```
+(Install Azure Functions Core Tools if `func` not found.)
+
+Upload a test blob:
+```
+# Example (PowerShell)
+Set-Content -Path sample.txt -Value "This is a sample KT document about onboarding."
+$env:AZURE_STORAGE_CONNECTION_STRING="UseDevelopmentStorage=true"
+az storage blob upload -c uploaded-docs -f sample.txt -n sample.txt --account-name devstoreaccount1 --account-key  Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==
+```
+(Above key is the well-known Azurite development key.)
+
+## Deployment Notes
+- Add these app settings in Azure Function App or Static Web App API configuration.
+- Ensure the storage connection string is set (`AzureWebJobsStorage`).
+- Grant network access for OpenAI and Speech if using private endpoints.
+
+## Extending
+- Add Cosmos DB or Table Storage for persistence of processing status
+- Introduce Durable Functions to orchestrate long-running generation
+- Add retry logic & circuit breaker for OpenAI calls
+
+## Disclaimer
+This is an MVP scaffold with minimal error handling; enhance logging, validation, and security for production.

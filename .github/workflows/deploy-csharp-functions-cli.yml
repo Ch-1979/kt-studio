@@ -46,12 +46,22 @@ jobs:
           echo "PWD: $(pwd)"
           ls -al
           echo "---- host.json ----"; cat host.json || echo "host.json missing"
-          echo "---- function.json files ----"; find . -name function.json -maxdepth 4 || true
-          COUNT=$(find . -name function.json | wc -l || echo 0)
-          echo "Function json count: $COUNT"
-          if [ "$COUNT" -eq 0 ]; then
-            echo "ERROR: No function.json generated. Failing." >&2
-            exit 1
+          echo "---- functions.metadata (new consolidated model in .NET 8 isolated) ----"
+          if [ -f functions.metadata ]; then
+            head -c 2000 functions.metadata || true
+            if grep -q 'ProcessKTDocument' functions.metadata; then
+              echo "Detected ProcessKTDocument entry in functions.metadata";
+            else
+              echo "WARNING: ProcessKTDocument not found inside functions.metadata" >&2
+            fi
+          else
+            echo "functions.metadata missing; falling back to legacy function.json scan";
+            find . -name function.json -maxdepth 4 || true
+            COUNT=$(find . -name function.json | wc -l || echo 0)
+            if [ "$COUNT" -eq 0 ]; then
+              echo "ERROR: Neither functions.metadata nor any function.json files present" >&2
+              exit 1
+            fi
           fi
 
       - name: Package ZIP

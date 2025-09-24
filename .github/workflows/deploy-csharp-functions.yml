@@ -53,20 +53,35 @@ jobs:
           ls -R || dir
           echo "Check host.json:" 
           cat host.json || type host.json
-          echo "Searching for function.json files:" 
-          find . -name function.json || echo "find not available" 
+          echo "Show functions metadata (new .NET 8 isolated consolidation):"
+          if [ -f functions.metadata ]; then
+            head -c 2000 functions.metadata || true
+          else
+            echo "functions.metadata not found (older SDK would emit function.json)"
+          fi
           echo "Done diagnostics."
 
-      - name: Validate build produced at least one function
+      - name: Validate build produced at least one function (functions.metadata aware)
         working-directory: csharp-functions/bin/Release/net8.0/publish
         run: |
-          COUNT=$(find . -name function.json | wc -l || echo 0)
-          echo "Function json count: $COUNT"
-          if [ "$COUNT" -eq 0 ]; then
-            echo "ERROR: No function.json produced. Failing early." >&2
-            exit 1
+          if [ -f functions.metadata ]; then
+            if grep -q 'ProcessKTDocument' functions.metadata; then
+              echo "Found ProcessKTDocument in functions.metadata"
+              exit 0
+            else
+              echo "functions.metadata present but function name not found" >&2
+              exit 1
+            fi
           fi
-          echo "Validation passed."
+          COUNT=$(find . -name function.json | wc -l || echo 0)
+          echo "Legacy function.json count: $COUNT"
+            if [ "$COUNT" -gt 0 ]; then
+              echo "Legacy function.json files found (acceptable)"
+              exit 0
+            else
+              echo "ERROR: Neither functions.metadata nor function.json present" >&2
+              exit 1
+            fi
 
       - name: Deploy via Publish Profile
         uses: azure/functions-action@v1

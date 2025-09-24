@@ -6,11 +6,11 @@ on:
       function_app_name:
         description: "Azure Function App name"
         required: true
-        default: "ktstudio-csharp-func"
+        default: "AIHACK-FUNCTIONAPP-GRP03"
       resource_group:
         description: "Resource group"
         required: true
-        default: "rg-kt-studio-dev"
+        default: "AIHACK-RG-GRP03"
       publish_profile_secret:
         description: "Name of repo secret containing publish profile XML"
         required: true

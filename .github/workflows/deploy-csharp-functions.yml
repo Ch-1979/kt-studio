@@ -6,7 +6,7 @@ on:
       function_app_name:
         description: "Azure Function App name"
         required: true
-        default: "AIHACK-FUNCTIONAPP-GRP03"
+        default: "AIHACK-FUNCTIONAPP-GRP03-DOTNET"
       resource_group:
         description: "Resource group"
         required: true
@@ -51,12 +51,26 @@ jobs:
           find . -name function.json || echo "find not available" 
           echo "Done diagnostics."
 
+      - name: Validate build produced at least one function
+        working-directory: csharp-functions/bin/Release/net8.0/publish
+        run: |
+          COUNT=$(find . -name function.json | wc -l || echo 0)
+          echo "Function json count: $COUNT"
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: No function.json produced. Failing early." >&2
+            exit 1
+          fi
+          echo "Validation passed."
+
       - name: Deploy via Publish Profile
         uses: azure/functions-action@v1
         with:
           app-name: ${{ github.event.inputs.function_app_name }}
           package: csharp-functions/bin/Release/net8.0/publish
           publish-profile: ${{ secrets[github.event.inputs.publish_profile_secret] }}
+
+      - name: Echo deployed target
+        run: echo "Deployment attempted to Function App: ${{ github.event.inputs.function_app_name }}"
 
       - name: Post-Deploy Reminder
         run: |

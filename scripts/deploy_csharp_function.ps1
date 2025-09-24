@@ -4,7 +4,17 @@ param(
     [string]$FunctionAppName = "ktstudio-csharp-func",
     [string]$StorageAccount = "",
     [switch]$CreateRg,
-    [switch]$SkipPublish
+    [switch]$SkipPublish,
+    # Optional OpenAI
+    [string]$OpenAIEndpoint = "",
+    [string]$OpenAIKey = "",
+    [string]$OpenAIDeployment = "gpt-4o-mini",
+    # Optional Speech
+    [string]$SpeechKey = "",
+    [string]$SpeechRegion = "",
+    [string]$SpeechVoice = "en-US-JennyNeural",
+    # Ensure containers
+    [switch]$EnsureContainers
 )
 
 if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
@@ -53,5 +63,34 @@ az functionapp config appsettings set -g $ResourceGroup -n $FunctionAppName --se
   FUNCTIONS_WORKER_RUNTIME=dotnet-isolated `
   WEBSITE_RUN_FROM_PACKAGE=1 | Out-Null
 
-Write-Host "Done. Configure AzureOpenAI & Speech settings separately:" -ForegroundColor Cyan
-Write-Host "az functionapp config appsettings set -g $ResourceGroup -n $FunctionAppName --settings AzureOpenAI:Endpoint=... AzureOpenAI:ApiKey=... AzureOpenAI:Deployment=... Speech:ApiKey=... Speech:Region=... Speech:Voice=en-US-JennyNeural" -ForegroundColor DarkGray
+# Append optional AI settings if provided
+$appSettings = @{}
+if ($OpenAIEndpoint -and $OpenAIKey) {
+    $appSettings['AzureOpenAI:Endpoint'] = $OpenAIEndpoint
+    $appSettings['AzureOpenAI:ApiKey'] = $OpenAIKey
+    if ($OpenAIDeployment) { $appSettings['AzureOpenAI:Deployment'] = $OpenAIDeployment }
+}
+if ($SpeechKey -and $SpeechRegion) {
+    $appSettings['Speech:ApiKey'] = $SpeechKey
+    $appSettings['Speech:Region'] = $SpeechRegion
+    if ($SpeechVoice) { $appSettings['Speech:Voice'] = $SpeechVoice }
+}
+if ($appSettings.Count -gt 0) {
+    $settingsArgs = $appSettings.GetEnumerator() | ForEach-Object { $_.Name + '=' + $_.Value }
+    az functionapp config appsettings set -g $ResourceGroup -n $FunctionAppName --settings $settingsArgs | Out-Null
+    Write-Host "Applied OpenAI/Speech settings" -ForegroundColor Green
+} else {
+    Write-Host "(No OpenAI/Speech settings provided, fallback content will be used)" -ForegroundColor Yellow
+}
+
+if ($EnsureContainers) {
+    Write-Host "Ensuring blob containers exist..."
+    foreach ($c in 'uploaded-docs','generated-audio','generated-videos','quiz-data') {
+        az storage container create --name $c --account-name $StorageAccount --output none 2>$null
+    }
+    Write-Host "Containers ensured." -ForegroundColor Green
+}
+
+Write-Host "Done." -ForegroundColor Cyan
+Write-Host "Blob trigger deployment complete -> Function App: $FunctionAppName" -ForegroundColor Cyan
+Write-Host "If you did not pass keys, you can add them later with: az functionapp config appsettings set -g $ResourceGroup -n $FunctionAppName --settings AzureOpenAI:Endpoint=... AzureOpenAI:ApiKey=..." -ForegroundColor DarkGray

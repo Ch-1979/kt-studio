@@ -1,4 +1,4 @@
-name: Deploy C# Blob Trigger Function (Manual)
+name: Deploy C# Blob Trigger Function (Manual or Auto)
 
 on:
   workflow_dispatch:
@@ -15,10 +15,16 @@ on:
         description: "Name of repo secret containing publish profile XML"
         required: true
         default: "AZURE_FUNCTIONAPP_PUBLISH_PROFILE"
+  push:
+    branches: [ main ]
+    paths:
+      - 'csharp-functions/**'
+      - '.github/workflows/deploy-csharp-functions.yml'
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    name: Build & Deploy (.NET Blob Trigger)
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -1,0 +1,52 @@
+name: Deploy C# Blob Trigger Function (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      function_app_name:
+        description: "Azure Function App name"
+        required: true
+        default: "ktstudio-csharp-func"
+      resource_group:
+        description: "Resource group"
+        required: true
+        default: "rg-kt-studio-dev"
+      publish_profile_secret:
+        description: "Name of repo secret containing publish profile XML"
+        required: true
+        default: "AZURE_FUNCTIONAPP_PUBLISH_PROFILE"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        working-directory: csharp-functions
+        run: dotnet restore
+
+      - name: Build
+        working-directory: csharp-functions
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Publish
+        working-directory: csharp-functions
+        run: dotnet publish ProcessKTDocumentFunction.csproj -c Release -o publish
+
+      - name: Deploy via Publish Profile
+        uses: azure/functions-action@v1
+        with:
+          app-name: ${{ github.event.inputs.function_app_name }}
+          package: csharp-functions/publish
+          publish-profile: ${{ secrets[github.event.inputs.publish_profile_secret] }}
+
+      - name: Post-Deploy Reminder
+        run: |
+          echo "If not already set, configure OpenAI & Speech settings on the Function App." 

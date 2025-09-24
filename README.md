@@ -233,6 +233,11 @@ cd publish
 func azure functionapp publish $APP
 ```
 
+Option C (GitHub Actions Manual Trigger):
+1. Add publish profile secret: In Function App Portal → Get Publish Profile → copy XML → GitHub repo → Settings → Secrets → Actions → New secret → Name: `AZURE_FUNCTIONAPP_PUBLISH_PROFILE`.
+2. In GitHub → Actions → Run workflow → Select "Deploy C# Blob Trigger Function (Manual)" → supply (or keep defaults) → Run.
+3. Workflow uses `.github/workflows/deploy-csharp-functions.yml` to build & deploy.
+
 ### App Settings to Configure on the C# Function App
 ```powershell
 az functionapp config appsettings set -g $RG -n $APP --settings \
@@ -252,6 +257,18 @@ Set-Content sample.txt "Sample KT onboarding doc about platform A."
 az storage blob upload -c uploaded-docs -f sample.txt -n sample.txt --account-name <storage>
 ```
 Watch console for logs; expect creation of JSON + (placeholder) audio entries.
+
+### Helper Scripts
+| Script | Purpose |
+|--------|---------|
+| `scripts/deploy_csharp_function.ps1` | One-shot create+publish of Function App (local) |
+| `scripts/trigger_sample_blob.ps1` | Upload sample blob to trigger processing |
+
+Examples:
+```powershell
+./scripts/deploy_csharp_function.ps1 -StorageAccount <storage> -FunctionAppName ktstudio-csharp-func -ResourceGroup rg-kt-studio-dev
+./scripts/trigger_sample_blob.ps1 -StorageAccount <storage> -FileName onboarding-doc.txt
+```
 
 ### Serving Generated Assets
 Add (future) Python HTTP endpoints:

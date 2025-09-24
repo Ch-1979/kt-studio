@@ -42,6 +42,17 @@ const elements = {
     quizResult: document.getElementById('quizResult')
 };
 
+// Newly added elements for processed documents
+const processedElements = {
+    select: document.getElementById('processedDocsSelect'),
+    refreshButton: document.getElementById('refreshDocsButton'),
+    loadButton: document.getElementById('loadProcessedButton'),
+    hint: document.getElementById('processedDocsHint')
+};
+
+let loadedVideoData = null; // stores currently loaded generated video JSON
+let loadedQuizData = null;  // stores currently loaded generated quiz JSON
+
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
     initializeEventListeners();
@@ -63,6 +74,10 @@ function initializeEventListeners() {
     // Quiz functionality
     elements.takeQuizButton.addEventListener('click', handleTakeQuiz);
     elements.submitQuizButton.addEventListener('click', handleSubmitQuiz);
+
+    // Processed docs actions
+    if (processedElements.refreshButton) processedElements.refreshButton.addEventListener('click', fetchProcessedDocs);
+    if (processedElements.loadButton) processedElements.loadButton.addEventListener('click', loadSelectedProcessedDoc);
     
     // Quiz option selection
     document.addEventListener('change', function(e) {
@@ -77,37 +92,76 @@ function handleUploadClick() {
     elements.ktDocumentInput.click();
 }
 
-function handleFileSelection(event) {
+async function handleFileSelection(event) {
     const file = event.target.files[0];
-    if (file) {
-        appState.selectedFileName = file.name;
+    if (!file) return;
+    appState.selectedFileName = file.name;
+    elements.uploadStatus.textContent = `Uploading: ${file.name} ...`;
+    elements.uploadStatus.style.display = 'block';
+    elements.uploadStatus.classList.add('fade-in');
+    elements.videoStatus.textContent = 'Status: Uploading...';
+    try {
+        const arrayBuffer = await file.arrayBuffer();
+        const base = window.location.origin;
+        const resp = await fetch(`${base}/api/upload?name=${encodeURIComponent(file.name)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: arrayBuffer
+        });
+        if (!resp.ok) throw new Error(`Upload failed HTTP ${resp.status}`);
+        const meta = await resp.json();
+        elements.uploadStatus.textContent = `Uploaded ${meta.fileName} (${meta.uploadedBytes} bytes)`;
         appState.isFileUploaded = true;
-        
-        // Show upload status
-        elements.uploadStatus.textContent = `File selected: ${file.name}`;
-        elements.uploadStatus.style.display = 'block';
-        elements.uploadStatus.classList.add('fade-in');
-        
-        // Simulate file processing
-        setTimeout(() => {
-            simulateFileProcessing();
-        }, 1500);
-        
-        updateUI();
+        elements.videoStatus.textContent = 'Status: Waiting for processing...';
+        pollProcessingStatus(meta.docName);
+    } catch (e) {
+        console.error('Upload failed', e);
+        elements.uploadStatus.textContent = 'Upload failed: ' + e.message;
+        elements.videoStatus.textContent = 'Status: Upload error';
     }
+    updateUI();
 }
 
-function simulateFileProcessing() {
-    // Update status to processing
-    elements.videoStatus.textContent = 'Status: Processing...';
-    
-    // After processing delay, show video ready
-    setTimeout(() => {
-        appState.isVideoReady = true;
-        elements.videoStatus.textContent = 'Status: Ready!';
-        elements.fileNameDisplay.textContent = appState.selectedFileName;
-        updateUI();
-    }, 2000);
+async function pollProcessingStatus(docBase) {
+    let attempts = 0;
+    const maxAttempts = 40; // ~4 minutes at 6s interval
+    const base = window.location.origin;
+    async function tick() {
+        attempts++;
+        try {
+            const resp = await fetch(`${base}/api/status/${encodeURIComponent(docBase)}`);
+            if (resp.ok) {
+                const st = await resp.json();
+                if (st.ready) {
+                    elements.videoStatus.textContent = 'Status: Ready (processed)';
+                    appState.isVideoReady = true;
+                    elements.fileNameDisplay.textContent = docBase + '.txt';
+                    // Preload content
+                    await Promise.all([
+                        fetchGeneratedVideo(docBase),
+                        fetchGeneratedQuiz(docBase)
+                    ]);
+                    if (loadedVideoData) applyLoadedVideo(docBase, loadedVideoData);
+                    return;
+                } else {
+                    const parts = [];
+                    parts.push(st.video ? 'video ✅' : 'video …');
+                    parts.push(st.quiz ? 'quiz ✅' : 'quiz …');
+                    elements.videoStatus.textContent = 'Status: Processing... (' + parts.join(', ') + ')';
+                }
+            } else {
+                elements.videoStatus.textContent = 'Status: Checking...';
+            }
+        } catch (e) {
+            elements.videoStatus.textContent = 'Status: Waiting...';
+        }
+        if (attempts < maxAttempts && !appState.isVideoReady) {
+            setTimeout(tick, 6000);
+        } else if (!appState.isVideoReady) {
+            elements.videoStatus.textContent = 'Status: Timed out waiting for processing';
+        }
+    }
+    setTimeout(tick, 5000); // initial delay to allow trigger start
 }
 
 // Video functionality
@@ -210,7 +264,11 @@ function handleTakeQuiz() {
     updateUI();
 
     // Attempt to fetch quiz dynamically from backend API (Azure Functions)
-    fetchQuizData();
+    if (loadedQuizData && loadedQuizData.questions) {
+        renderQuiz(loadedQuizData.questions);
+    } else {
+        fetchQuizData();
+    }
 
     // Scroll to quiz section
     document.querySelector('.quiz-card').scrollIntoView({
@@ -301,6 +359,134 @@ async function fetchQuizData() {
         ]);
     }
 }
+
+// ---------------- Processed Docs Integration ---------------- //
+async function fetchProcessedDocs() {
+    const base = window.location.origin;
+    const url = `${base}/api/list/docs`;
+    processedElements.refreshButton.disabled = true;
+    try {
+        const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        const docs = Array.isArray(data.documents) ? data.documents : [];
+        populateProcessedDocsSelect(docs);
+        showNotification(`Loaded ${docs.length} processed docs`, 'success');
+    } catch (e) {
+        console.warn('Failed to fetch processed docs', e);
+        showNotification('Failed to load documents', 'error');
+    } finally {
+        processedElements.refreshButton.disabled = false;
+    }
+}
+
+function populateProcessedDocsSelect(docs) {
+    const sel = processedElements.select;
+    sel.innerHTML = '';
+    if (!docs.length) {
+        sel.innerHTML = '<option value="" disabled selected>-- none found --</option>';
+        return;
+    }
+    sel.innerHTML = '<option value="" disabled selected>Select document...</option>' +
+        docs.map(d => `<option value="${d}">${d}</option>`).join('');
+}
+
+async function loadSelectedProcessedDoc() {
+    const doc = processedElements.select.value;
+    if (!doc) {
+        showNotification('Choose a document first', 'error');
+        return;
+    }
+    await Promise.all([
+        fetchGeneratedVideo(doc),
+        fetchGeneratedQuiz(doc)
+    ]);
+    if (loadedVideoData) {
+        applyLoadedVideo(doc, loadedVideoData);
+        showNotification('Video script loaded', 'success');
+    }
+}
+
+async function fetchGeneratedVideo(docName) {
+    loadedVideoData = null;
+    const base = window.location.origin;
+    try {
+        const resp = await fetch(`${base}/api/video/${encodeURIComponent(docName)}`, { headers: { 'Accept': 'application/json' } });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        loadedVideoData = await resp.json();
+    } catch (e) {
+        console.warn('Video fetch failed', e);
+        showNotification('Video data not found', 'error');
+    }
+}
+
+async function fetchGeneratedQuiz(docName) {
+    loadedQuizData = null;
+    const base = window.location.origin;
+    try {
+        const resp = await fetch(`${base}/api/quiz/${encodeURIComponent(docName)}`, { headers: { 'Accept': 'application/json' } });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        // map expected shape to existing quiz renderer
+        if (Array.isArray(data.questions)) {
+            loadedQuizData = data;
+        } else if (Array.isArray(data.quiz)) {
+            loadedQuizData = { questions: data.quiz };
+        }
+    } catch (e) {
+        console.warn('Quiz fetch failed', e);
+    }
+}
+
+function applyLoadedVideo(docName, videoJson) {
+    appState.selectedFileName = docName + '.txt';
+    appState.isFileUploaded = true;
+    appState.isVideoReady = true;
+    elements.videoStatus.textContent = 'Status: Ready (loaded)';
+    elements.fileNameDisplay.textContent = docName + '.txt';
+    // If scenes exist, show first scene text
+    if (videoJson.scenes && videoJson.scenes.length) {
+        elements.currentText.textContent = videoJson.scenes[0].text || videoJson.scenes[0];
+    }
+    updateUI();
+    // Replace simulated video content progression with scene stepping (simple approach)
+    if (videoJson.scenes && videoJson.scenes.length) {
+        let idx = 0;
+        const total = videoJson.scenes.length;
+        // redefine simulateVideoProgress to step through scenes
+        simulateVideoProgress = function customSceneProgress() {
+            if (!appState.isVideoPlaying) return;
+            const interval = setInterval(() => {
+                if (!appState.isVideoPlaying) { clearInterval(interval); return; }
+                appState.currentProgress += (100 / total) / 5; // 5 ticks per scene approx
+                if (appState.currentProgress >= ((idx + 1) * (100 / total))) {
+                    idx++;
+                    if (idx < total) {
+                        const scene = videoJson.scenes[idx];
+                        elements.currentText.textContent = scene.text || scene;
+                    } else {
+                        clearInterval(interval);
+                        appState.currentProgress = 100;
+                        elements.playPauseButton.innerHTML = '<i class="fas fa-reply"></i>';
+                        appState.isVideoPlaying = false;
+                    }
+                }
+                if (appState.currentProgress > 100) appState.currentProgress = 100;
+                elements.progressBar.value = Math.floor(appState.currentProgress);
+                updateTimeDisplay();
+            }, 600);
+        };
+    }
+    if (loadedQuizData && loadedQuizData.questions) {
+        // prepare quiz button
+        elements.takeQuizButton.style.display = 'block';
+    }
+}
+
+// Auto-load processed docs list on first load
+document.addEventListener('DOMContentLoaded', () => {
+    fetchProcessedDocs();
+});
 
 function renderQuiz(questions) {
     const container = elements.activeQuiz;

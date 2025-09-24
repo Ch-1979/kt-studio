@@ -50,6 +50,21 @@
                     <h3><span class="step-number">2.</span> Processing & Videos</h3>
                     <div class="processing-content">
                         <p id="videoStatus" class="status-text">Status: Awaiting upload...</p>
+                        <div id="processedDocsPanel" class="processed-docs-panel" style="margin-top:10px; display:flex; flex-direction:column; gap:6px;">
+                            <label for="processedDocsSelect" style="font-size:12px; color:#666;">Processed Documents</label>
+                            <div style="display:flex; gap:6px;">
+                                <select id="processedDocsSelect" style="flex:1; padding:6px; border:1px solid #ccc; border-radius:4px; font-size:13px;">
+                                    <option value="" disabled selected>-- none loaded yet --</option>
+                                </select>
+                                <button id="refreshDocsButton" class="icon-button" title="Refresh list"><i class="fas fa-rotate"></i></button>
+                            </div>
+                            <div style="display:flex; gap:6px;">
+                                <button id="loadProcessedButton" class="secondary-button" style="flex:1;">
+                                    <i class="fas fa-download"></i> Load Selected
+                                </button>
+                            </div>
+                            <p id="processedDocsHint" style="margin:0; font-size:11px; color:#888;">Select a processed doc to view generated scenes.</p>
+                        </div>
                         
                         <div id="videoReadySection" class="video-ready-section" style="display: none;">
                             <div class="video-item">

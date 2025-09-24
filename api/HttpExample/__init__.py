@@ -3,6 +3,7 @@ import json
 import os
 from typing import List
 import azure.functions as func
+from datetime import datetime
 
 try:
     from azure.storage.blob import BlobServiceClient  # type: ignore
@@ -140,4 +141,80 @@ def list_docs(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse(json.dumps({"documents": sorted(docs)}), mimetype="application/json")
     except Exception as ex:
         logging.exception("Error listing documents")
+        return func.HttpResponse(json.dumps({"error": str(ex)}), status_code=500, mimetype="application/json")
+
+
+# ---------------- New: Upload & Status Endpoints ---------------- #
+@app.route(route="upload", methods=["POST"])  # raw body upload; header x-file-name or query ?name=
+def upload_doc(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        file_name = req.params.get("name") or req.headers.get("x-file-name") or ""
+        if not file_name:
+            return func.HttpResponse(json.dumps({"error": "Missing file name (use ?name= or x-file-name header)"}), status_code=400, mimetype="application/json")
+        file_name = _safe_doc_name(file_name)
+        # Normalize extension; if none, default .txt (blob trigger will still fire)
+        if '.' not in file_name:
+            file_name += '.txt'
+        body = req.get_body() or b""
+        if not body:
+            return func.HttpResponse(json.dumps({"error": "Empty body"}), status_code=400, mimetype="application/json")
+        svc = _get_blob_service()
+        container = 'uploaded-docs'
+        container_client = svc.get_container_client(container)
+        if not container_client.exists():
+            container_client.create_container()
+        blob_client = container_client.get_blob_client(file_name)
+        blob_client.upload_blob(body, overwrite=True)
+        logging.info("Uploaded document %s (%d bytes)", file_name, len(body))
+        base = file_name.rsplit('.', 1)[0]
+        return func.HttpResponse(
+            json.dumps({
+                "docName": base,
+                "fileName": file_name,
+                "uploadedBytes": len(body),
+                "timestamp": datetime.utcnow().isoformat() + 'Z'
+            }),
+            status_code=201,
+            mimetype="application/json"
+        )
+    except Exception as ex:
+        logging.exception("Upload failed")
+        return func.HttpResponse(json.dumps({"error": str(ex)}), status_code=500, mimetype="application/json")
+
+
+@app.route(route="status/{docName}")
+def status_doc(req: func.HttpRequest) -> func.HttpResponse:
+    doc_name = req.route_params.get("docName") or ""
+    doc_name = _safe_doc_name(doc_name)
+    if doc_name.endswith('.txt'):
+        base = doc_name[:-4]
+    else:
+        base = doc_name
+    try:
+        svc = _get_blob_service()
+        video_blob = f"{base}.video.json"
+        quiz_blob = f"{base}.quiz.json"
+        video_exists = False
+        quiz_exists = False
+        try:
+            vc = svc.get_container_client('generated-videos')
+            if vc.exists():
+                video_exists = vc.get_blob_client(video_blob).exists()
+        except Exception:  # pragma: no cover - ignore
+            pass
+        try:
+            qc = svc.get_container_client('quiz-data')
+            if qc.exists():
+                quiz_exists = qc.get_blob_client(quiz_blob).exists()
+        except Exception:  # pragma: no cover
+            pass
+        status = {
+            "docName": base,
+            "video": video_exists,
+            "quiz": quiz_exists,
+            "ready": video_exists and quiz_exists
+        }
+        return func.HttpResponse(json.dumps(status), mimetype="application/json", status_code=200)
+    except Exception as ex:
+        logging.exception("Status check failed")
         return func.HttpResponse(json.dumps({"error": str(ex)}), status_code=500, mimetype="application/json")

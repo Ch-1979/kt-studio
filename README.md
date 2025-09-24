@@ -51,6 +51,8 @@ python -m http.server 5500
 If `python` command not found, try:
 ```powershell
 py -m http.server 5500
+ - Real upload endpoint (`POST /api/upload`) storing raw file in `uploaded-docs` (triggers C# function)
+ - Document status endpoint (`GET /api/status/{docName}`) used by frontend polling until both video & quiz are ready
 ```
 
 ### Option 5: Node.js Static Server (if you have Node)
@@ -60,11 +62,18 @@ npm install -g serve
 # Run
 serve -p 5500 .
 # Open http://localhost:5500
+ | `/api/upload?name={fileName}` | POST | Upload raw KT document (body = file bytes) |
+ | `/api/status/{docName}` | GET | Check readiness (video + quiz) |
 ```
 
 ---
-## 🧪 How to Validate It Works
-1. Page loads with header, workspace banner, 3 columns, dark video panel, quiz card
+ 2. Frontend sends `POST /api/upload?name=<filename>` with raw bytes. Azure Function stores blob in `uploaded-docs`.
+ 3. Blob Trigger (C# Function App) detects new blob and generates:
+      - `<base>.video.json` -> `generated-videos` container
+      - `<base>.quiz.json` -> `quiz-data` container
+ 4. Frontend polls `GET /api/status/<base>` every ~6s until both artifacts exist.
+ 5. Once ready, frontend auto-fetches `/api/video/<base>` + `/api/quiz/<base>` and wires scenes & quiz.
+ 6. User watches scripted scene progression & takes generated quiz.
 2. Click "Choose File to Upload" → pick any `.docx`/`.pdf`/`.txt` (any file works)
 3. You see: "File selected: yourfile.docx"
 4. Status changes: `Awaiting upload...` → `Processing...` → `Ready!`

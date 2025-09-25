@@ -58,6 +58,8 @@ jobs:
           #### Skips build since no node build step
           skip_app_build: true
           skip_api_build: true
+          #### Explicitly specify runtime to satisfy new SWA platform requirement when skipping build
+          azure_function_params: '--runtime python'
         env:
           #### Optional environment variables
           FUNCTIONS_WORKER_RUNTIME: python

@@ -1,5 +1,7 @@
 using System.Text;
 using System.Text.Json;
+using System.Linq; // Needed for LINQ extensions like Select
+using System.Collections.Generic; // Needed for List<T>
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Microsoft.Azure.Functions.Worker;

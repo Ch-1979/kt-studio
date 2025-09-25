@@ -34,7 +34,7 @@ public class ProcessKTDocument
                 var content = downloadInfo.Value.Content.ToString();
                 _logger.LogInformation("[ProcessKTDocument] Downloaded content length={Length}", content.Length);
 
-            var (summary, scenes, quiz) = GenerateContent(documentText);
+            var (summary, scenes, quiz) = GenerateContent(content);
 
             var videoJson = new
             {

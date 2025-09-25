@@ -26,6 +26,32 @@ def debug_test(req: func.HttpRequest) -> func.HttpResponse:
 def ping(req: func.HttpRequest) -> func.HttpResponse:  # minimal health check
     return func.HttpResponse("pong", status_code=200)
 
+# Stage 2 restore (Batch A): quiz/sample (pure in-memory JSON)
+@app.route(route="quiz/sample")
+def quiz_sample(req: func.HttpRequest) -> func.HttpResponse:
+    sample = {
+        "questions": [
+            {
+                "id": "q1",
+                "text": "What is the primary database used in Project Alpha's architecture?",
+                "options": ["MySQL", "PostgreSQL", "Cosmos DB", "MongoDB"],
+                "correctIndex": 1
+            },
+            {
+                "id": "q2",
+                "text": "Which layer will we enhance next with Azure OpenAI?",
+                "options": ["Frontend UI", "Blob Trigger Orchestrator", "Database Engine", "On-Prem Agent"],
+                "correctIndex": 1
+            }
+        ]
+    }
+    return func.HttpResponse(
+        body=json.dumps(sample),
+        mimetype="application/json",
+        status_code=200,
+        headers={"Cache-Control": "no-store"}
+    )
+
 # --- Original routes temporarily disabled for diagnostics ---
 # @app.route(route="ping")
 # def ping(req: func.HttpRequest) -> func.HttpResponse:

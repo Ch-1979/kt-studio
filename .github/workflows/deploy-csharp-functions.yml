@@ -1,4 +1,4 @@
-name: Deploy C# Blob Trigger Function (Manual or Auto)
+name: Deploy C# Blob Trigger Function (AAD OIDC Deploy)
 
 on:
   workflow_dispatch:
@@ -11,10 +11,6 @@ on:
         description: "Resource group"
         required: true
         default: "AIHACK-RG-GRP03"
-      publish_profile_secret:
-        description: "Name of repo secret containing publish profile XML"
-        required: true
-        default: "AZURE_FUNCTIONAPP_PUBLISH_PROFILE"
   push:
     branches: [ main ]
     paths:
@@ -83,15 +79,38 @@ jobs:
               exit 1
             fi
 
-      - name: Deploy via Publish Profile
-        uses: azure/functions-action@v1
+      - name: Azure Login (OIDC)
+        uses: azure/login@v1
         with:
-          app-name: ${{ github.event.inputs.function_app_name }}
-          package: csharp-functions/bin/Release/net8.0/publish
-          publish-profile: ${{ secrets[github.event.inputs.publish_profile_secret] }}
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Echo deployed target
-        run: echo "Deployment attempted to Function App: ${{ github.event.inputs.function_app_name }}"
+      - name: Create deployment ZIP
+        working-directory: csharp-functions/bin/Release/net8.0/publish
+        run: |
+          echo "Creating deployment ZIP (root contents):"; ls -1
+          zip -r ../../../../functionapp.zip . >/dev/null
+          echo "ZIP size:"; ls -lh ../../../../functionapp.zip
+
+      - name: Deploy via az functionapp deployment source config-zip
+        run: |
+          set -e
+          echo "Starting zip deploy to ${{ github.event.inputs.function_app_name }}"
+          az functionapp deployment source config-zip \
+            --name ${{ github.event.inputs.function_app_name }} \
+            --resource-group ${{ github.event.inputs.resource_group }} \
+            --src functionapp.zip \
+            --debug --only-show-errors || (echo "Zip deploy failed" && exit 1)
+          echo "Zip deploy completed."
+
+      - name: Post-deploy sanity (list site files)
+        run: |
+          echo "Listing root of wwwroot via Kudu API (sanitized)" || true
+          # This uses az rest with the access token from azure/login
+          TOKEN=$(az account get-access-token --resource https://management.azure.com --query accessToken -o tsv)
+          echo "(Skipping raw Kudu listing due to auth complexity with AAD unless App has Easy Auth)."
+          echo "Deployment attempted to Function App: ${{ github.event.inputs.function_app_name }}"
 
       - name: Post-Deploy Reminder
         run: |

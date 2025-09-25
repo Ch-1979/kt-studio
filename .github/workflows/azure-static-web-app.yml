@@ -27,6 +27,26 @@ jobs:
         run: |
           if [ "${GITHUB_REF##*/}" = "master" ]; then echo "branch=master" >> $GITHUB_OUTPUT; else echo "branch=main" >> $GITHUB_OUTPUT; fi
 
+      - name: Setup Python (explicit) for Functions API
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install API dependencies (pre-build)
+        working-directory: api
+        run: |
+          python --version
+          echo "Requirements:" && cat requirements.txt
+          mkdir -p .python_packages/lib/site-packages
+          pip install -r requirements.txt -t .python_packages/lib/site-packages --upgrade
+          python -c "import azure.functions; print('azure.functions version:', azure.functions.__version__)" || echo "Could not import azure.functions"
+          ls -1 .python_packages/lib/site-packages | head -50
+
+      - name: Diagnostics - list API folder
+        run: |
+          echo "API folder structure (top level):"
+          find api -maxdepth 3 -type f | sed 's#^# - #' | head -100
+
       # Let the SWA action/Oryx build the Python Functions API automatically.
       # We intentionally remove pre-build install + skip_api_build to allow Oryx to detect the Python runtime
       # and generate required function metadata (function.json) for the new programming model.

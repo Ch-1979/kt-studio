@@ -24,33 +24,43 @@ public class ProcessKTDocument
     }
 
     [Function("ProcessKTDocument")]
-    public async Task Run([BlobTrigger("uploaded-docs/{name}", Connection = "AzureWebJobsStorage")] BlobClient blobClient, string name)
-    {
-        _logger.LogInformation("Triggered ProcessKTDocument for blob: {BlobName}", name);
-
-        var documentText = await ReadBlobTextAsync(blobClient);
-        _logger.LogInformation("Read {Length} chars from document", documentText.Length);
-
-        var (summary, scenes, quiz) = GenerateContent(documentText);
-
-        var videoJson = new
+        public async Task Run([BlobTrigger("uploaded-docs/{name}", Connection = "AzureWebJobsStorage")] BlobClient blobClient, string name)
         {
-            sourceDocument = name,
-            summary,
-            scenes = scenes.Select((s, i) => new { index = i + 1, text = s }),
-            createdUtc = DateTime.UtcNow
-        };
-        var quizJson = new
+            _logger.LogInformation("[ProcessKTDocument] Triggered for blob Name={Name} Uri={Uri}", name, blobClient.Uri);
+            var swTotal = System.Diagnostics.Stopwatch.StartNew();
+        try
         {
-            sourceDocument = name,
-            createdUtc = DateTime.UtcNow,
-            questions = quiz
-        };
+                var downloadInfo = await blobClient.DownloadContentAsync();
+                var content = downloadInfo.Value.Content.ToString();
+                _logger.LogInformation("[ProcessKTDocument] Downloaded content length={Length}", content.Length);
 
-        await UploadJsonAsync("generated-videos", Path.ChangeExtension(name, ".video.json"), videoJson);
-        await UploadJsonAsync("quiz-data", Path.ChangeExtension(name, ".quiz.json"), quizJson);
+            var (summary, scenes, quiz) = GenerateContent(documentText);
 
-        _logger.LogInformation("Processing complete for {BlobName}", name);
+            var videoJson = new
+            {
+                sourceDocument = name,
+                summary,
+                scenes = scenes.Select((s, i) => new { index = i + 1, text = s }),
+                createdUtc = DateTime.UtcNow
+            };
+            var quizJson = new
+            {
+                sourceDocument = name,
+                createdUtc = DateTime.UtcNow,
+                questions = quiz
+            };
+
+            await UploadJsonAsync("generated-videos", Path.ChangeExtension(name, ".video.json"), videoJson);
+            await UploadJsonAsync("quiz-data", Path.ChangeExtension(name, ".quiz.json"), quizJson);
+
+                swTotal.Stop();
+                _logger.LogInformation("[ProcessKTDocument] Generated video JSON and quiz JSON in {ElapsedMs} ms", swTotal.ElapsedMilliseconds);
+        }
+        catch (Exception ex)
+        {
+                _logger.LogError(ex, "[ProcessKTDocument] Error processing blob {Name}", name);
+            throw; // preserve failure semantics so platform surfaces the error
+        }
     }
 
     private async Task<string> ReadBlobTextAsync(BlobClient blob)

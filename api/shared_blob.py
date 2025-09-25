@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import json
 import datetime as _dt
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Iterable
 
 try:  # Import optional blob packages; they are present in requirements.txt
 	from azure.storage.blob import BlobServiceClient  # type: ignore
@@ -184,6 +184,9 @@ __all__ = [
 	"get_processing_status",
 	"try_get_processed_video",
 	"debug_storage_config",
+	"find_processed_artifacts",
+	"load_processed_video",
+	"load_processed_quiz",
 ]
 
 
@@ -206,3 +209,90 @@ def debug_storage_config() -> Dict[str, Any]:
 		"maskedValue": masked,
 		"hasBlobLib": BlobServiceClient is not None,
 	}
+
+
+# ---------------- Real artifact retrieval helpers ---------------- #
+
+def _list_blobs(container: str) -> Iterable[str]:
+	client = _get_blob_service()
+	if not client:
+		return []
+	try:
+		cc = client.get_container_client(container)
+		if not cc.exists():  # type: ignore[attr-defined]
+			return []
+		return [b.name for b in cc.list_blobs()]  # type: ignore
+	except Exception:
+		return []
+
+
+def _download_text(container: str, blob_name: str) -> Optional[str]:
+	client = _get_blob_service()
+	if not client:
+		return None
+	try:
+		cc = client.get_container_client(container)
+		bc = cc.get_blob_client(blob_name)
+		data = bc.download_blob().readall()
+		return data.decode("utf-8", errors="ignore")
+	except Exception:
+		return None
+
+
+def _match_processed(doc_base: str, blob_name: str) -> bool:
+	# Accept patterns like TIMESTAMP_original.ext.video.json or direct original.video.json
+	# Strategy: strip any leading 14-digit timestamp + underscore
+	candidate = blob_name
+	if len(candidate) > 15 and candidate[:14].isdigit() and candidate[14] == '_':
+		candidate = candidate[15:]
+	# Remove .video.json / .quiz.json
+	if candidate.endswith('.video.json'):
+		core = candidate[:-11]
+	elif candidate.endswith('.quiz.json'):
+		core = candidate[:-10]
+	else:
+		core = candidate
+	# Remove extension like .txt if present
+	if core.endswith('.txt'):
+		core = core[:-4]
+	return core.lower() == doc_base.lower()
+
+
+def find_processed_artifacts(doc_base: str) -> Dict[str, Optional[str]]:
+	video_blob = None
+	quiz_blob = None
+	for name in _list_blobs(VIDEO_CONTAINER):
+		if name.endswith('.video.json') and _match_processed(doc_base, name):
+			video_blob = name
+			break
+	for name in _list_blobs(QUIZ_CONTAINER):
+		if name.endswith('.quiz.json') and _match_processed(doc_base, name):
+			quiz_blob = name
+			break
+	return {"video": video_blob, "quiz": quiz_blob}
+
+
+def load_processed_video(doc_base: str) -> Optional[Dict[str, Any]]:
+	art = find_processed_artifacts(doc_base)
+	if not art.get("video"):
+		return None
+	text = _download_text(VIDEO_CONTAINER, art["video"])
+	if not text:
+		return None
+	try:
+		return json.loads(text)
+	except Exception:
+		return None
+
+
+def load_processed_quiz(doc_base: str) -> Optional[Dict[str, Any]]:
+	art = find_processed_artifacts(doc_base)
+	if not art.get("quiz"):
+		return None
+	text = _download_text(QUIZ_CONTAINER, art["quiz"])
+	if not text:
+		return None
+	try:
+		return json.loads(text)
+	except Exception:
+		return None

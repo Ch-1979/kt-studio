@@ -77,6 +77,15 @@ jobs:
           BLOB_CONNECTION_STRING: ${{ secrets.BLOB_CONNECTION_STRING }}
           AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
           blob_connection_string: ${{ secrets.BLOB_CONNECTION_STRING }}
+          # Preferred shared storage (ensures Python + C# share same account)
+          PREFERRED_BLOB_CONNECTION: ${{ secrets.BLOB_CONNECTION_STRING || secrets.AZURE_STORAGE_CONNECTION_STRING }}
+
+      - name: Post-deploy storage var diagnostic
+        if: always()
+        run: |
+          echo "PREFERRED_BLOB_CONNECTION length: ${#PREFERRED_BLOB_CONNECTION}" || true
+          echo "BLOB_CONNECTION_STRING length: ${#BLOB_CONNECTION_STRING}" || true
+          echo "AZURE_STORAGE_CONNECTION_STRING length: ${#AZURE_STORAGE_CONNECTION_STRING}" || true
 
       - name: Deployment summary
         run: |

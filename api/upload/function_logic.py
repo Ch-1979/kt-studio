@@ -1,5 +1,5 @@
 import json
-from typing import Any
+import traceback
 import azure.functions as func
 from ..shared_blob import save_uploaded_text
 
@@ -12,6 +12,17 @@ def _bad(msg: str, code: int = 400) -> func.HttpResponse:
 
 def handle(req: func.HttpRequest) -> func.HttpResponse:  # type: ignore
     method = req.method.upper()
+    if method == "OPTIONS":
+        # CORS / preflight support (frontend frameworks sometimes send this)
+        return func.HttpResponse(
+            "",
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST,OPTIONS",
+                "Access-Control-Allow-Headers": "content-type",
+            },
+        )
     if method != "POST":
         return _bad("Only POST supported", 405)
 
@@ -44,9 +55,24 @@ def handle(req: func.HttpRequest) -> func.HttpResponse:  # type: ignore
     if len(content) > MAX_SIZE:
         return _bad("Content too large for stub endpoint (200KB limit)")
 
-    blob_name = save_uploaded_text(name, content)
-    return func.HttpResponse(
-        json.dumps({"savedAs": blob_name, "bytes": len(content)}),
-        status_code=200,
-        mimetype="application/json",
-    )
+    try:
+        blob_name = save_uploaded_text(name, content)
+        return func.HttpResponse(
+            json.dumps({"savedAs": blob_name, "bytes": len(content)}),
+            status_code=200,
+            mimetype="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+    except Exception as ex:  # noqa: BLE001
+        tb = traceback.format_exc(limit=3)
+        err_payload = {
+            "error": "Storage operation failed",
+            "message": str(ex),
+            "trace": tb,
+        }
+        return func.HttpResponse(
+            json.dumps(err_payload),
+            status_code=500,
+            mimetype="application/json",
+            headers={"Access-Control-Allow-Origin": "*"},
+        )

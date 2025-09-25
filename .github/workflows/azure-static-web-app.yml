@@ -27,21 +27,9 @@ jobs:
         run: |
           if [ "${GITHUB_REF##*/}" = "master" ]; then echo "branch=master" >> $GITHUB_OUTPUT; else echo "branch=main" >> $GITHUB_OUTPUT; fi
 
-      - name: Setup Python for Functions API
-        uses: actions/setup-python@v5
-        with:
-            python-version: '3.11'
-
-      - name: Install Functions API deps
-        working-directory: api
-        run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt -t .python_packages/lib/site-packages; fi
-
-      - name: Upload API build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: api_artifact
-          path: api
+      # Let the SWA action/Oryx build the Python Functions API automatically.
+      # We intentionally remove pre-build install + skip_api_build to allow Oryx to detect the Python runtime
+      # and generate required function metadata (function.json) for the new programming model.
 
       - name: Deploy to Azure Static Web Apps
         id: deploy
@@ -57,9 +45,7 @@ jobs:
           api_location: 'api'               # Azure Functions folder
           #### Skips build since no node build step
           skip_app_build: true
-          skip_api_build: true
-          #### Explicitly specify runtime to satisfy new SWA platform requirement when skipping build
-          azure_function_params: '--runtime python'
+          # IMPORTANT: Do NOT skip the API build. We rely on Oryx to detect Python functions.
         env:
           #### Optional environment variables
           FUNCTIONS_WORKER_RUNTIME: python

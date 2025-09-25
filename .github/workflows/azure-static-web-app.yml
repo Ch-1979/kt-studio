@@ -27,20 +27,14 @@ jobs:
         run: |
           if [ "${GITHUB_REF##*/}" = "master" ]; then echo "branch=master" >> $GITHUB_OUTPUT; else echo "branch=main" >> $GITHUB_OUTPUT; fi
 
-      - name: Setup Python (explicit) for Functions API
+      - name: Setup Python (Functions runtime compatible 3.10)
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      - name: Install API dependencies (pre-build)
-        working-directory: api
-        run: |
-          python --version
-          echo "Requirements:" && cat requirements.txt
-          mkdir -p .python_packages/lib/site-packages
-          pip install -r requirements.txt -t .python_packages/lib/site-packages --upgrade
-          python -c "import azure.functions; print('azure.functions version:', azure.functions.__version__)" || echo "Could not import azure.functions"
-          ls -1 .python_packages/lib/site-packages | head -50
+      # NOTE: We intentionally removed the manual pip vendoring step to let Oryx perform
+      # a clean build. Previous manual install may have enlarged artifacts and contributed
+      # to deployment timeouts. runtime.txt (python|3.10) inside api/ will guide Oryx too.
 
       - name: Diagnostics - list API folder
         run: |
@@ -69,6 +63,8 @@ jobs:
         env:
           #### Optional environment variables
           FUNCTIONS_WORKER_RUNTIME: python
+          # Force Oryx preference for Python 3.10 (defensive)
+          ORYX_PREFER_PYTHON_VERSION: 3.10
 
       - name: Deployment summary
         run: |

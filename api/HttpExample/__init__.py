@@ -21,6 +21,11 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 def debug_test(req: func.HttpRequest) -> func.HttpResponse:
     return func.HttpResponse("OK", status_code=200)
 
+# Stage 1 restore: simple ping (no storage dependency)
+@app.route(route="ping")
+def ping(req: func.HttpRequest) -> func.HttpResponse:  # minimal health check
+    return func.HttpResponse("pong", status_code=200)
+
 # --- Original routes temporarily disabled for diagnostics ---
 # @app.route(route="ping")
 # def ping(req: func.HttpRequest) -> func.HttpResponse:

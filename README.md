@@ -305,6 +305,7 @@ For enhancements or backend wiring, create an issue or extend the code with modu
 Enjoy building the full platform! 🚀
 
 ---
+<!-- Redeploy trigger: $(date) -->
 ## 🔧 Fixing Failed GitHub Action: Missing `AZURE_STATIC_WEB_APPS_API_TOKEN`
 If your GitHub Action run ("Azure Static Web Apps CI/CD") failed with an error like:
 

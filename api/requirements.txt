@@ -1,3 +1,5 @@
 azure-functions==1.19.0
-azure-core==1.30.2
-azure-storage-blob==12.21.1
+# Let blob SDK pull a compatible azure-core; optional explicit minimal pin
+azure-core>=1.30.0
+# Use a published stable version (12.21.1 not on index). 12.26.0 is available.
+azure-storage-blob==12.26.0

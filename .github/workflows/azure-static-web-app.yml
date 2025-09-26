@@ -62,7 +62,7 @@ jobs:
           action: 'upload'
           #### App (frontend) settings
           app_location: '/'                 # Root (where index.html lives)
-          output_location: '/'              # No build output (static)
+          output_location: ''               # Empty means use app root (fix potential 500 packaging issue)
           #### API settings
           api_location: 'api'               # Azure Functions folder
           #### Skips build since no node build step

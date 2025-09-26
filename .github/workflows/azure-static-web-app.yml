@@ -8,6 +8,7 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -70,13 +71,14 @@ jobs:
           # IMPORTANT: Do NOT skip the API build. We rely on Oryx to detect Python functions.
         env:
           #### Optional environment variables
+          ENABLE_ORYX_BUILD_LOGGING: "true"
+          ORYX_LOGGING_VERBOSITY: "verbose"
           FUNCTIONS_WORKER_RUNTIME: python
           # Force Oryx preference for Python 3.10 (defensive)
           ORYX_PREFER_PYTHON_VERSION: 3.10
           # Surface alternate connection string names to code (they may or may not be populated)
           BLOB_CONNECTION_STRING: ${{ secrets.BLOB_CONNECTION_STRING }}
           AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-          blob_connection_string: ${{ secrets.BLOB_CONNECTION_STRING }}
           # Preferred shared storage (ensures Python + C# share same account)
           PREFERRED_BLOB_CONNECTION: ${{ secrets.BLOB_CONNECTION_STRING || secrets.AZURE_STORAGE_CONNECTION_STRING }}
 

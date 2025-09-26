@@ -8,10 +8,12 @@ concurrency:
   cancel-in-progress: true
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
       - master
+      - temp-minimal-fix
     paths-ignore:
       - '**/*.md'
       - '.github/workflows/deploy-csharp-functions*.yml'

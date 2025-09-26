@@ -187,6 +187,7 @@ __all__ = [
 	"find_processed_artifacts",
 	"load_processed_video",
 	"load_processed_quiz",
+	"list_known_doc_bases",
 ]
 
 
@@ -258,6 +259,19 @@ def _match_processed(doc_base: str, blob_name: str) -> bool:
 	return core.lower() == doc_base.lower()
 
 
+def _extract_doc_base(blob_name: str) -> str:
+	candidate = blob_name
+	if len(candidate) > 15 and candidate[:14].isdigit() and candidate[14] == '_':
+		candidate = candidate[15:]
+	if candidate.endswith('.video.json'):
+		candidate = candidate[:-11]
+	elif candidate.endswith('.quiz.json'):
+		candidate = candidate[:-10]
+	if '.' in candidate:
+		candidate = candidate.rsplit('.', 1)[0]
+	return candidate
+
+
 def find_processed_artifacts(doc_base: str) -> Dict[str, Optional[str]]:
 	video_blob = None
 	quiz_blob = None
@@ -296,3 +310,25 @@ def load_processed_quiz(doc_base: str) -> Optional[Dict[str, Any]]:
 		return json.loads(text)
 	except Exception:
 		return None
+
+
+def list_known_doc_bases() -> List[str]:
+	"""Return all document base names we know about (uploaded or processed)."""
+	bases: set[str] = set()
+
+	for uploaded in list_uploaded_docs():
+		name = uploaded
+		if len(name) > 15 and name[:14].isdigit() and name[14] == '_':
+			name = name[15:]
+		if '.' in name:
+			name = name.rsplit('.', 1)[0]
+		bases.add(name)
+
+	for blob in _list_blobs(VIDEO_CONTAINER):
+		if blob.endswith('.video.json'):
+			bases.add(_extract_doc_base(blob))
+	for blob in _list_blobs(QUIZ_CONTAINER):
+		if blob.endswith('.quiz.json'):
+			bases.add(_extract_doc_base(blob))
+
+	return sorted(bases)

@@ -78,7 +78,6 @@ jobs:
           # Surface alternate connection string names to code (they may or may not be populated)
           BLOB_CONNECTION_STRING: ${{ secrets.BLOB_CONNECTION_STRING }}
           AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-          blob_connection_string: ${{ secrets.BLOB_CONNECTION_STRING }}
           # Preferred shared storage (ensures Python + C# share same account)
           PREFERRED_BLOB_CONNECTION: ${{ secrets.BLOB_CONNECTION_STRING || secrets.AZURE_STORAGE_CONNECTION_STRING }}
 

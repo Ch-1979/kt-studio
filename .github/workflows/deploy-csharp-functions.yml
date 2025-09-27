@@ -72,10 +72,13 @@ jobs:
 
       - name: Publish
         working-directory: csharp-functions
-        run: dotnet publish ProcessKTDocumentFunction.csproj -c Release
+        run: |
+          echo "Cleaning old publish output" || true
+          rm -rf publish || true
+          dotnet publish ProcessKTDocumentFunction.csproj -c Release -o publish
 
       - name: Diagnostics - List publish output
-        working-directory: csharp-functions/bin/Release/net8.0/publish
+        working-directory: csharp-functions/publish
         run: |
           echo "Listing publish directory contents:" 
           ls -R || dir
@@ -90,7 +93,7 @@ jobs:
           echo "Done diagnostics."
 
       - name: Validate build produced at least one function (functions.metadata aware)
-        working-directory: csharp-functions/bin/Release/net8.0/publish
+        working-directory: csharp-functions/publish
         run: |
           if [ -f functions.metadata ]; then
             if grep -q 'ProcessKTDocument' functions.metadata; then
@@ -111,21 +114,21 @@ jobs:
               exit 1
             fi
 
-        - name: Resolve deployment parameters
-          id: params
-          run: |
-            FUNCTION_APP="${{ github.event.inputs.function_app_name }}"
-            RESOURCE_GROUP="${{ github.event.inputs.resource_group }}"
-            if [ -z "$FUNCTION_APP" ]; then
-              FUNCTION_APP="$DEFAULT_FUNCTION_APP"
-            fi
-            if [ -z "$RESOURCE_GROUP" ]; then
-              RESOURCE_GROUP="$DEFAULT_RESOURCE_GROUP"
-            fi
-            echo "Resolved function app: $FUNCTION_APP"
-            echo "Resolved resource group: $RESOURCE_GROUP"
-            echo "function_app=$FUNCTION_APP" >> "$GITHUB_OUTPUT"
-            echo "resource_group=$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
+      - name: Resolve deployment parameters
+        id: params
+        run: |
+          FUNCTION_APP="${{ github.event.inputs.function_app_name }}"
+          RESOURCE_GROUP="${{ github.event.inputs.resource_group }}"
+          if [ -z "$FUNCTION_APP" ]; then
+            FUNCTION_APP="$DEFAULT_FUNCTION_APP"
+          fi
+          if [ -z "$RESOURCE_GROUP" ]; then
+            RESOURCE_GROUP="$DEFAULT_RESOURCE_GROUP"
+          fi
+          echo "Resolved function app: $FUNCTION_APP"
+          echo "Resolved resource group: $RESOURCE_GROUP"
+          echo "function_app=$FUNCTION_APP" >> "$GITHUB_OUTPUT"
+          echo "resource_group=$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
 
       - name: Azure Login (OIDC)
         uses: azure/login@v1
@@ -136,13 +139,16 @@ jobs:
         # If login fails, ensure federated credential matches repo/branch and App Registration has proper RBAC.
 
       - name: Create deployment ZIP
-        working-directory: csharp-functions/bin/Release/net8.0/publish
+        working-directory: csharp-functions/publish
         run: |
           echo "Creating deployment ZIP (root contents):"; ls -1
-          zip -r ../../../../functionapp.zip . >/dev/null
-          echo "ZIP size:"; ls -lh ../../../../functionapp.zip
+          rm -f ../functionapp.zip || true
+          zip -r ../functionapp.zip . >/dev/null
+          echo "ZIP size:"; ls -lh ../functionapp.zip
+          unzip -l ../functionapp.zip | head -n 30
 
       - name: Deploy via az functionapp deployment source config-zip
+        working-directory: csharp-functions
         run: |
           set -e
           echo "Starting zip deploy to ${{ steps.params.outputs.function_app }}"

@@ -40,6 +40,9 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     name: Build & Deploy (.NET Blob Trigger)
+    env:
+      DEFAULT_FUNCTION_APP: AIHACK-FUNCTIONAPP-GRP03-DOTNET
+      DEFAULT_RESOURCE_GROUP: AIHACK-RG-GRP03
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -108,6 +111,22 @@ jobs:
               exit 1
             fi
 
+        - name: Resolve deployment parameters
+          id: params
+          run: |
+            FUNCTION_APP="${{ github.event.inputs.function_app_name }}"
+            RESOURCE_GROUP="${{ github.event.inputs.resource_group }}"
+            if [ -z "$FUNCTION_APP" ]; then
+              FUNCTION_APP="$DEFAULT_FUNCTION_APP"
+            fi
+            if [ -z "$RESOURCE_GROUP" ]; then
+              RESOURCE_GROUP="$DEFAULT_RESOURCE_GROUP"
+            fi
+            echo "Resolved function app: $FUNCTION_APP"
+            echo "Resolved resource group: $RESOURCE_GROUP"
+            echo "function_app=$FUNCTION_APP" >> "$GITHUB_OUTPUT"
+            echo "resource_group=$RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
+
       - name: Azure Login (OIDC)
         uses: azure/login@v1
         with:
@@ -126,12 +145,12 @@ jobs:
       - name: Deploy via az functionapp deployment source config-zip
         run: |
           set -e
-          echo "Starting zip deploy to ${{ github.event.inputs.function_app_name }}"
+          echo "Starting zip deploy to ${{ steps.params.outputs.function_app }}"
           az functionapp deployment source config-zip \
-            --name ${{ github.event.inputs.function_app_name }} \
-            --resource-group ${{ github.event.inputs.resource_group }} \
+            --name ${{ steps.params.outputs.function_app }} \
+            --resource-group ${{ steps.params.outputs.resource_group }} \
             --src functionapp.zip \
-            --debug --only-show-errors || (echo "Zip deploy failed" && exit 1)
+            --only-show-errors || (echo "Zip deploy failed" && exit 1)
           echo "Zip deploy completed."
 
       - name: Post-deploy sanity (list site files)
@@ -140,7 +159,7 @@ jobs:
           # This uses az rest with the access token from azure/login
           TOKEN=$(az account get-access-token --resource https://management.azure.com --query accessToken -o tsv)
           echo "(Skipping raw Kudu listing due to auth complexity with AAD unless App has Easy Auth)."
-          echo "Deployment attempted to Function App: ${{ github.event.inputs.function_app_name }}"
+          echo "Deployment attempted to Function App: ${{ steps.params.outputs.function_app }}"
 
       - name: Post-Deploy Reminder
         run: |

@@ -4,6 +4,7 @@ using System.Linq; // Needed for LINQ extensions like Select
 using System.Collections.Generic; // Needed for List<T>
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
+using Azure.AI.OpenAI;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -72,7 +73,45 @@ public class ProcessKTDocument
 
     private (string Summary, List<string> Scenes, List<object> Quiz) GenerateContent(string documentText)
     {
-        // Extremely simple deterministic fallback: split into paragraphs, cap at 6 scenes.
+        var endpoint = _config["AzureOpenAI:Endpoint"] ?? _config["AzureOpenAI__Endpoint"];
+        var apiKey = _config["AzureOpenAI:ApiKey"] ?? _config["AzureOpenAI__ApiKey"];
+        var deployment = _config["AzureOpenAI:Deployment"] ?? _config["AzureOpenAI__Deployment"];
+
+        if (!string.IsNullOrWhiteSpace(endpoint) && !string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(deployment))
+        {
+            try
+            {
+                _logger.LogInformation("[ProcessKTDocument] Using Azure OpenAI deployment {Deployment}", deployment);
+                var client = new OpenAIClient(new Uri(endpoint), new AzureKeyCredential(apiKey));
+                // Prompt engineering: request structured JSON.
+                var systemPrompt = "You are an assistant that extracts training content. Produce: summary (<=160 chars), 4-6 concise scene texts, and 3 multiple choice quiz questions with 4 options and index of correct option.";
+                var userPrompt = $"SOURCE DOCUMENT:\n---\n{Truncate(documentText, 5000)}\n---\nRespond strictly in JSON with keys summary, scenes, quiz. quiz is array of objects (question, options[], correctIndex).";
+                var chat = new ChatCompletionsOptions()
+                {
+                    Temperature = 0.4f,
+                    MaxTokens = 800,
+                    Messages =
+                    {
+                        new ChatRequestSystemMessage(systemPrompt),
+                        new ChatRequestUserMessage(userPrompt)
+                    }
+                };
+                var resp = client.GetChatCompletions(deployment, chat);
+                var content = resp.Value.Choices.First().Message.Content.FirstOrDefault()?.Text ?? string.Empty;
+                var parsed = JsonSerializer.Deserialize<AoaiResponse>(content, new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+                if (parsed != null && parsed.Scenes?.Count > 0 && parsed.Quiz?.Count > 0)
+                {
+                    var quizObjs = parsed.Quiz.Select(q => new { question = q.Question, options = q.Options, correctIndex = q.CorrectIndex }).Cast<object>().ToList();
+                    return (parsed.Summary ?? "", parsed.Scenes!, quizObjs);
+                }
+                _logger.LogWarning("[ProcessKTDocument] Azure OpenAI returned unusable response; falling back.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[ProcessKTDocument] Azure OpenAI generation failed; using fallback.");
+            }
+        }
+        // Fallback deterministic logic
         var paragraphs = documentText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
             .Select(p => p.Trim())
             .Where(p => p.Length > 10)
@@ -92,6 +131,22 @@ public class ProcessKTDocument
             new { question = "What can you configure later for smarter output?", options = new[]{"Azure OpenAI","FTP","POP3","SMTP"}, correctIndex = 0 }
         };
         return (summary, paragraphs, quiz);
+    }
+
+    private static string Truncate(string input, int max)
+        => string.IsNullOrEmpty(input) ? input : (input.Length <= max ? input : input.Substring(0, max));
+
+    private class AoaiResponse
+    {
+        public string? Summary { get; set; }
+        public List<string>? Scenes { get; set; }
+        public List<QuizItem>? Quiz { get; set; }
+    }
+    private class QuizItem
+    {
+        public string Question { get; set; } = string.Empty;
+        public List<string> Options { get; set; } = new();
+        public int CorrectIndex { get; set; }
     }
 
     private async Task UploadJsonAsync(string containerName, string blobName, object payload)

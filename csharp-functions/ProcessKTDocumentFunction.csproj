@@ -18,6 +18,7 @@
   <PackageReference Include="Azure.Storage.Blobs" Version="12.21.1" />
   <PackageReference Include="Microsoft.Extensions.Configuration" Version="8.0.0" />
   <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
+  <PackageReference Include="Azure.AI.OpenAI" Version="1.0.0" />
   </ItemGroup>
   <!-- Explicitly mark host.json to ensure it is copied (usually automatic, but added to avoid deployment detection issues) -->
   <ItemGroup>

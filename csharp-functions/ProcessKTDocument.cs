@@ -1,10 +1,14 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using System.Linq; // Needed for LINQ extensions like Select
-using System.Collections.Generic; // Needed for List<T>
+using System.Diagnostics;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
-using Azure.AI.OpenAI;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -13,6 +17,8 @@ namespace KTStudio.Functions;
 
 public class ProcessKTDocument
 {
+    private static readonly HttpClient HttpClient = new();
+
     private readonly BlobServiceClient _blobServiceClient;
     private readonly ILogger<ProcessKTDocument> _logger;
     private readonly IConfiguration _config;
@@ -23,19 +29,18 @@ public class ProcessKTDocument
         _logger = logger;
         _config = config;
     }
-
     [Function("ProcessKTDocument")]
-        public async Task Run([BlobTrigger("uploaded-docs/{name}", Connection = "AzureWebJobsStorage")] BlobClient blobClient, string name)
-        {
-            _logger.LogInformation("[ProcessKTDocument] Triggered for blob Name={Name} Uri={Uri}", name, blobClient.Uri);
-            var swTotal = System.Diagnostics.Stopwatch.StartNew();
+    public async Task Run([BlobTrigger("uploaded-docs/{name}", Connection = "AzureWebJobsStorage")] BlobClient blobClient, string name)
+    {
+        _logger.LogInformation("[ProcessKTDocument] Triggered for blob Name={Name} Uri={Uri}", name, blobClient.Uri);
+        var swTotal = System.Diagnostics.Stopwatch.StartNew();
+
         try
         {
-                var downloadInfo = await blobClient.DownloadContentAsync();
-                var content = downloadInfo.Value.Content.ToString();
-                _logger.LogInformation("[ProcessKTDocument] Downloaded content length={Length}", content.Length);
+            var downloadInfo = await blobClient.DownloadContentAsync();
+            var content = downloadInfo.Value.Content.ToString();
 
-            var (summary, scenes, quiz) = GenerateContent(content);
+            var (summary, scenes, quiz) = await GenerateContentAsync(content);
 
             var videoJson = new
             {
@@ -44,6 +49,7 @@ public class ProcessKTDocument
                 scenes = scenes.Select((s, i) => new { index = i + 1, text = s }),
                 createdUtc = DateTime.UtcNow
             };
+
             var quizJson = new
             {
                 sourceDocument = name,
@@ -54,24 +60,17 @@ public class ProcessKTDocument
             await UploadJsonAsync("generated-videos", Path.ChangeExtension(name, ".video.json"), videoJson);
             await UploadJsonAsync("quiz-data", Path.ChangeExtension(name, ".quiz.json"), quizJson);
 
-                swTotal.Stop();
-                _logger.LogInformation("[ProcessKTDocument] Generated video JSON and quiz JSON in {ElapsedMs} ms", swTotal.ElapsedMilliseconds);
+            swTotal.Stop();
+            _logger.LogInformation("[ProcessKTDocument] Generated video JSON and quiz JSON in {ElapsedMs} ms", swTotal.ElapsedMilliseconds);
         }
         catch (Exception ex)
         {
-                _logger.LogError(ex, "[ProcessKTDocument] Error processing blob {Name}", name);
-            throw; // preserve failure semantics so platform surfaces the error
+            _logger.LogError(ex, "[ProcessKTDocument] Error processing blob {Name}", name);
+            throw;
         }
     }
 
-    private async Task<string> ReadBlobTextAsync(BlobClient blob)
-    {
-        using var stream = new MemoryStream();
-        await blob.DownloadToAsync(stream);
-        return Encoding.UTF8.GetString(stream.ToArray());
-    }
-
-    private (string Summary, List<string> Scenes, List<object> Quiz) GenerateContent(string documentText)
+    private async Task<(string Summary, List<string> Scenes, List<object> Quiz)> GenerateContentAsync(string documentText)
     {
         var endpoint = _config["AzureOpenAI:Endpoint"] ?? _config["AzureOpenAI__Endpoint"];
         var apiKey = _config["AzureOpenAI:ApiKey"] ?? _config["AzureOpenAI__ApiKey"];
@@ -81,30 +80,60 @@ public class ProcessKTDocument
         {
             try
             {
-                _logger.LogInformation("[ProcessKTDocument] Using Azure OpenAI deployment {Deployment}", deployment);
-                var client = new OpenAIClient(new Uri(endpoint), new AzureKeyCredential(apiKey));
-                // Prompt engineering: request structured JSON.
-                var systemPrompt = "You are an assistant that extracts training content. Produce: summary (<=160 chars), 4-6 concise scene texts, and 3 multiple choice quiz questions with 4 options and index of correct option.";
-                var userPrompt = $"SOURCE DOCUMENT:\n---\n{Truncate(documentText, 5000)}\n---\nRespond strictly in JSON with keys summary, scenes, quiz. quiz is array of objects (question, options[], correctIndex).";
-                var chat = new ChatCompletionsOptions()
+                var baseUri = endpoint.EndsWith('/') ? endpoint : endpoint + "/";
+                var requestUri = new Uri(new Uri(baseUri), $"openai/deployments/{deployment}/chat/completions?api-version=2024-08-01-preview");
+
+                var payload = new
                 {
-                    Temperature = 0.4f,
-                    MaxTokens = 800,
-                    Messages =
+                    messages = new object[]
                     {
-                        new ChatRequestSystemMessage(systemPrompt),
-                        new ChatRequestUserMessage(userPrompt)
-                    }
+                        new
+                        {
+                            role = "system",
+                            content = "You extract training content. Return strict JSON with keys: summary (<=160 chars), scenes (array of 4-6 short strings), quiz (array of {question, options[4], correctIndex})."
+                        },
+                        new
+                        {
+                            role = "user",
+                            content = $"SOURCE DOCUMENT:\n---\n{Truncate(documentText, 5000)}\n---\nRespond with JSON only."
+                        }
+                    },
+                    temperature = 0.4,
+                    max_tokens = 800
                 };
-                var resp = client.GetChatCompletions(deployment, chat);
-                var content = resp.Value.Choices.First().Message.Content.FirstOrDefault()?.Text ?? string.Empty;
-                var parsed = JsonSerializer.Deserialize<AoaiResponse>(content, new JsonSerializerOptions{PropertyNameCaseInsensitive=true});
-                if (parsed != null && parsed.Scenes?.Count > 0 && parsed.Quiz?.Count > 0)
+
+                var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
                 {
-                    var quizObjs = parsed.Quiz.Select(q => new { question = q.Question, options = q.Options, correctIndex = q.CorrectIndex }).Cast<object>().ToList();
-                    return (parsed.Summary ?? "", parsed.Scenes!, quizObjs);
+                    Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+                };
+
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                request.Headers.Add("api-key", apiKey);
+
+                var response = await HttpClient.SendAsync(request);
+                if (response.IsSuccessStatusCode)
+                {
+                    var raw = await response.Content.ReadAsStringAsync();
+                    var parsed = TryParseAoaiResponse(raw);
+                    if (parsed != null && parsed.Scenes?.Count > 0 && parsed.Quiz?.Count > 0)
+                    {
+                        var quizObjects = parsed.Quiz.Select(q => (object)new
+                        {
+                            question = q.Question,
+                            options = q.Options,
+                            correctIndex = q.CorrectIndex
+                        }).ToList();
+
+                        return (parsed.Summary ?? string.Empty, parsed.Scenes, quizObjects);
+                    }
+
+                    _logger.LogWarning("[ProcessKTDocument] Azure OpenAI response parse failed; using fallback.");
                 }
-                _logger.LogWarning("[ProcessKTDocument] Azure OpenAI returned unusable response; falling back.");
+                else
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    _logger.LogWarning("[ProcessKTDocument] Azure OpenAI HTTP {Status}: {Body}", response.StatusCode, body);
+                }
             }
             catch (Exception ex)
             {
@@ -131,6 +160,53 @@ public class ProcessKTDocument
             new { question = "What can you configure later for smarter output?", options = new[]{"Azure OpenAI","FTP","POP3","SMTP"}, correctIndex = 0 }
         };
         return (summary, paragraphs, quiz);
+    }
+
+    private static AoaiResponse? TryParseAoaiResponse(string raw)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(raw);
+            if (!document.RootElement.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
+            {
+                return null;
+            }
+
+            var message = choices[0].GetProperty("message");
+            string? assistantText = null;
+
+            if (message.TryGetProperty("content", out var contentElement))
+            {
+                assistantText = contentElement.ValueKind switch
+                {
+                    JsonValueKind.String => contentElement.GetString(),
+                    JsonValueKind.Array => string.Join("\n", contentElement.EnumerateArray()
+                        .Select(segment => segment.TryGetProperty("text", out var textElement) ? textElement.GetString() : null)
+                        .Where(text => !string.IsNullOrWhiteSpace(text))),
+                    _ => null
+                };
+            }
+
+            if (string.IsNullOrWhiteSpace(assistantText))
+            {
+                return null;
+            }
+
+            var firstBrace = assistantText.IndexOf('{');
+            if (firstBrace > 0)
+            {
+                assistantText = assistantText[firstBrace..];
+            }
+
+            return JsonSerializer.Deserialize<AoaiResponse>(assistantText, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string Truncate(string input, int max)

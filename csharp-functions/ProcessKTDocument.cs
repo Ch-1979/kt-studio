@@ -117,12 +117,15 @@ public class ProcessKTDocument
                     var parsed = TryParseAoaiResponse(raw);
                     if (parsed != null && parsed.Scenes?.Count > 0 && parsed.Quiz?.Count > 0)
                     {
-                        var quizObjects = parsed.Quiz.Select(q => (object)new
-                        {
-                            question = q.Question,
-                            options = q.Options,
-                            correctIndex = q.CorrectIndex
-                        }).ToList();
+                        var quizObjects = parsed.Quiz
+                            .Select((q, i) => (object)new
+                            {
+                                id = q.Id ?? $"q{i + 1}",
+                                text = q.Question,
+                                options = q.Options,
+                                correctIndex = q.CorrectIndex
+                            })
+                            .ToList();
 
                         return (parsed.Summary ?? string.Empty, parsed.Scenes, quizObjects);
                     }
@@ -155,9 +158,9 @@ public class ProcessKTDocument
         var summary = summarySource.Length > 160 ? summarySource.Substring(0, 160) + "..." : summarySource;
         var quiz = new List<object>
         {
-            new { question = "Is this content generated without external AI services?", options = new[]{"Yes","No","Unsure","Partially"}, correctIndex = 0 },
-            new { question = "How many scenes were produced?", options = new[]{"1","2","3+","None"}, correctIndex = paragraphs.Count >= 3 ? 2 : (paragraphs.Count == 2 ? 1 : 0) },
-            new { question = "What can you configure later for smarter output?", options = new[]{"Azure OpenAI","FTP","POP3","SMTP"}, correctIndex = 0 }
+            new { id = "q1", text = "Is this content generated without external AI services?", options = new[]{"Yes","No","Unsure","Partially"}, correctIndex = 0 },
+            new { id = "q2", text = "How many scenes were produced?", options = new[]{"1","2","3+","None"}, correctIndex = paragraphs.Count >= 3 ? 2 : (paragraphs.Count == 2 ? 1 : 0) },
+            new { id = "q3", text = "What can you configure later for smarter output?", options = new[]{"Azure OpenAI","FTP","POP3","SMTP"}, correctIndex = 0 }
         };
         return (summary, paragraphs, quiz);
     }
@@ -223,6 +226,7 @@ public class ProcessKTDocument
         public string Question { get; set; } = string.Empty;
         public List<string> Options { get; set; } = new();
         public int CorrectIndex { get; set; }
+        public string? Id { get; set; }
     }
 
     private async Task UploadJsonAsync(string containerName, string blobName, object payload)

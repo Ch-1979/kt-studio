@@ -143,10 +143,31 @@ def list_uploaded_docs() -> List[str]:
 def generate_stub_video(doc_name: str) -> Dict[str, Any]:
 	# Placeholder logic – future version will rely on C# / AI pipeline
 	return {
-		"doc": doc_name,
+		"sourceDocument": doc_name,
+		"summary": f"High-level overview of {doc_name}",
+		"sceneCount": 2,
+		"createdUtc": _dt.datetime.utcnow().isoformat() + "Z",
 		"scenes": [
-			{"index": 1, "title": "Introduction", "text": f"Overview of {doc_name}"},
-			{"index": 2, "title": "Details", "text": "Key concepts..."},
+			{
+				"index": 1,
+				"title": "Introduction",
+				"text": f"Overview of {doc_name}",
+				"keywords": ["overview", "context"],
+				"badge": "Overview",
+				"imageUrl": None,
+				"imageAlt": None,
+				"visualPrompt": "Isometric illustration of training overview"
+			},
+			{
+				"index": 2,
+				"title": "Key Concepts",
+				"text": "Key concepts highlighted in the knowledge transfer document.",
+				"keywords": ["concepts", "details"],
+				"badge": "Highlights",
+				"imageUrl": None,
+				"imageAlt": None,
+				"visualPrompt": "Modern diagram referencing cloud architecture"
+			},
 		],
 		"generated": True,
 	}

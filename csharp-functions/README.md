@@ -7,11 +7,10 @@ Trigger: Blob upload to container `uploaded-docs` (storage linked by `AzureWebJo
 
 Pipeline steps:
 1. Read original document text
-2. Call Azure OpenAI to produce: summary, scene script list, quiz questions
-3. For each scene, synthesize audio via Azure Cognitive Services Speech (Text-to-Speech)
-4. Store audio in container `generated-audio`
-5. Store video JSON (scenes + audio mapping) in `generated-videos`
-6. Store quiz JSON in `quiz-data`
+2. Call Azure OpenAI to produce: summary, structured storyboard scenes, and quiz questions
+3. Optionally call Azure OpenAI image generation to create a visual for each scene (stored in `storyboard-images`)
+4. Store video JSON (including scene metadata + image URLs) in `generated-videos`
+5. Store quiz JSON in `quiz-data`
 
 All containers are auto-created if missing (private access).
 
@@ -32,9 +31,7 @@ All containers are auto-created if missing (private access).
     "AzureOpenAI:Endpoint": "https://YOUR_OPENAI_RESOURCE.openai.azure.com/",
     "AzureOpenAI:ApiKey": "YOUR_OPENAI_KEY",
     "AzureOpenAI:Deployment": "gpt-4o-mini",
-    "Speech:ApiKey": "YOUR_SPEECH_KEY",
-    "Speech:Region": "YOUR_SPEECH_REGION",
-    "Speech:Voice": "en-US-JennyNeural"
+    "AzureOpenAI:ImageDeployment": "gpt-image-1"
   }
 }
 ```
@@ -64,7 +61,7 @@ az storage blob upload -c uploaded-docs -f sample.txt -n sample.txt --account-na
 ## Deployment Notes
 - Add these app settings in Azure Function App or Static Web App API configuration.
 - Ensure the storage connection string is set (`AzureWebJobsStorage`).
-- Grant network access for OpenAI and Speech if using private endpoints.
+- Grant network access for Azure OpenAI endpoints if using private networking.
 
 ## Extending
 - Add Cosmos DB or Table Storage for persistence of processing status

@@ -497,17 +497,22 @@ function normalizeScenes(rawScenes, fallbackSummary) {
             if (typeof scene === 'string') {
                 return buildSceneFromText(scene, idx);
             }
-            const text = scene.text || scene.caption || scene.content || fallbackSummary || '';
+            const text = scene.text || scene.narration || scene.caption || scene.content || fallbackSummary || '';
             if (!text || !text.trim()) return null;
             const title = scene.title || createTitleFromText(text, idx);
-            const keywords = Array.isArray(scene.keywords) && scene.keywords.length
+            const rawKeywords = Array.isArray(scene.keywords) && scene.keywords.length
                 ? scene.keywords
                 : guessKeywords(text);
+            const keywords = Array.from(new Set(rawKeywords.map(k => (k || '').toString().trim()).filter(Boolean)));
             return {
                 index: scene.index ?? idx + 1,
                 title,
                 text,
                 keywords,
+                badge: scene.badge || null,
+                imageUrl: scene.imageUrl || scene.image_url || null,
+                imageAlt: scene.imageAlt || scene.image_alt || title,
+                visualPrompt: scene.visualPrompt || null,
                 gradient: scene.gradient || createGradient(idx),
                 mood: scene.mood || null
             };
@@ -522,6 +527,10 @@ function buildSceneFromText(text, idx) {
         title: createTitleFromText(cleanText, idx),
         text: cleanText,
         keywords: guessKeywords(cleanText),
+        badge: idx === 0 ? 'Overview' : null,
+        imageUrl: null,
+        imageAlt: null,
+        visualPrompt: null,
         gradient: createGradient(idx),
         mood: null
     };
@@ -530,7 +539,8 @@ function buildSceneFromText(text, idx) {
 function updateScene(index, options = {}) {
     if (!videoScenes.length) {
         elements.sceneBackdrop.style.background = createGradient(0);
-        elements.sceneBadge.textContent = 'Scene 1';
+        elements.sceneBadge.textContent = '';
+        elements.sceneBadge.classList.add('hidden');
         elements.sceneTitle.textContent = 'Awaiting storyboard';
         elements.sceneText.textContent = 'Upload a document to generate AI-powered scenes.';
         elements.sceneKeywords.innerHTML = '';
@@ -544,8 +554,26 @@ function updateScene(index, options = {}) {
     const scene = videoScenes[safeIndex];
 
     appState.currentSceneIndex = safeIndex;
-    elements.sceneBackdrop.style.background = scene.gradient;
-    elements.sceneBadge.textContent = `Scene ${scene.index ?? safeIndex + 1}`;
+        if (scene.imageUrl) {
+            elements.sceneBackdrop.style.backgroundImage = `linear-gradient(160deg, rgba(15,23,42,0.15) 10%, rgba(15,23,42,0.9) 70%), url('${scene.imageUrl}')`;
+            elements.sceneBackdrop.style.backgroundSize = 'cover';
+            elements.sceneBackdrop.style.backgroundPosition = 'center';
+            elements.sceneBackdrop.style.backgroundRepeat = 'no-repeat';
+            elements.sceneBackdrop.classList.add('has-image');
+            if (scene.imageAlt) {
+                elements.sceneBackdrop.setAttribute('aria-label', scene.imageAlt);
+            } else {
+                elements.sceneBackdrop.removeAttribute('aria-label');
+            }
+        } else {
+            elements.sceneBackdrop.style.backgroundImage = '';
+            elements.sceneBackdrop.style.background = scene.gradient;
+            elements.sceneBackdrop.classList.remove('has-image');
+            elements.sceneBackdrop.removeAttribute('aria-label');
+        }
+        const badgeLabel = scene.badge || '';
+        elements.sceneBadge.textContent = badgeLabel;
+        elements.sceneBadge.classList.toggle('hidden', !badgeLabel);
     elements.sceneTitle.textContent = scene.title;
     elements.sceneText.textContent = scene.text;
     renderSceneKeywords(scene.keywords);
@@ -565,9 +593,11 @@ function updateScene(index, options = {}) {
 function renderSceneKeywords(keywords) {
     elements.sceneKeywords.innerHTML = '';
     if (!Array.isArray(keywords) || !keywords.length) return;
-    keywords.slice(0, 4).forEach(word => {
+    keywords.slice(0, 5).forEach(word => {
+        const cleaned = (word || '').toString().trim();
+        if (!cleaned) return;
         const chip = document.createElement('span');
-        chip.textContent = word.startsWith('#') ? word : `#${word}`;
+        chip.textContent = cleaned.startsWith('#') ? cleaned : `#${cleaned}`;
         elements.sceneKeywords.appendChild(chip);
     });
 }

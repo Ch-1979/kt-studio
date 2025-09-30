@@ -334,6 +334,10 @@ body {
     letter-spacing: 0.5px;
 }
 
+.scene-badge.hidden {
+    display: none;
+}
+
 .scene-title {
     font-size: 24px;
     font-weight: 600;
@@ -364,6 +368,12 @@ body {
 .scene-keywords span.new-keyword {
     animation: keywordPop 0.4s ease;
     background-color: rgba(59, 130, 246, 0.35);
+}
+
+.scene-backdrop.has-image {
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
 }
 
 @keyframes keywordPop {

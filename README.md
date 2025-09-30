@@ -208,6 +208,7 @@ uploaded-docs
 generated-audio
 generated-videos
 quiz-data
+storyboard-images
 ```
 
 Create them (one-time) with Azure CLI:
@@ -217,6 +218,7 @@ az storage container create --name uploaded-docs --account-name $STORAGE
 az storage container create --name generated-audio --account-name $STORAGE
 az storage container create --name generated-videos --account-name $STORAGE
 az storage container create --name quiz-data --account-name $STORAGE
+az storage container create --name storyboard-images --account-name $STORAGE
 ```
 
 ### Deploying the C# Function Separately
@@ -253,6 +255,7 @@ az functionapp config appsettings set -g $RG -n $APP --settings \
    AzureOpenAI:Endpoint="https://YOUR_OPENAI_RESOURCE.openai.azure.com/" \
    AzureOpenAI:ApiKey="<OPENAI_KEY>" \
    AzureOpenAI:Deployment="gpt-4o-mini" \
+   AzureOpenAI:ImageDeployment="gpt-image-1" \
    Speech:ApiKey="<SPEECH_KEY>" \
    Speech:Region="<SPEECH_REGION>" \
    Speech:Voice="en-US-JennyNeural"

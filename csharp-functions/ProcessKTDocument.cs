@@ -43,6 +43,7 @@ public class ProcessKTDocument
             var content = downloadInfo.Value.Content.ToString();
 
             var (summary, scenes, quiz) = await GenerateContentAsync(name, content);
+            var videoAsset = await GenerateVideoAssetAsync(name, summary, scenes);
 
             var videoJson = new
             {
@@ -60,7 +61,19 @@ public class ProcessKTDocument
                     imageUrl = scene.ImageUrl,
                     imageAlt = scene.ImageAlt,
                     visualPrompt = scene.VisualPrompt
-                })
+                }),
+                videoAsset = videoAsset == null
+                    ? null
+                    : new
+                    {
+                        mp4Url = videoAsset.Mp4Url,
+                        thumbnailUrl = videoAsset.ThumbnailUrl,
+                        durationSeconds = Math.Round(videoAsset.DurationSeconds, 1),
+                        prompt = videoAsset.Prompt,
+                        operationId = videoAsset.RawOperationId,
+                        sourceUrl = videoAsset.SourceUrl,
+                        thumbnailSourceUrl = videoAsset.ThumbnailSourceUrl
+                    }
             };
 
             var quizJson = new
@@ -482,6 +495,420 @@ public class ProcessKTDocument
 
     private record ImagePayload(string? Base64, string? Url);
 
+    private async Task<VideoAsset?> GenerateVideoAssetAsync(string docName, string summary, List<SceneData> scenes)
+    {
+        if (scenes == null || scenes.Count == 0)
+        {
+            return null;
+        }
+
+        var videoDeployment = _config["AzureOpenAI:VideoDeployment"] ?? _config["AzureOpenAI__VideoDeployment"];
+        if (string.IsNullOrWhiteSpace(videoDeployment))
+        {
+            _logger.LogInformation("[ProcessKTDocument] Video generation skipped: AzureOpenAI:VideoDeployment not configured.");
+            return null;
+        }
+
+        var endpoint = _config["AzureOpenAI:Endpoint"] ?? _config["AzureOpenAI__Endpoint"];
+        var apiKey = _config["AzureOpenAI:ApiKey"] ?? _config["AzureOpenAI__ApiKey"];
+
+        if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(apiKey))
+        {
+            _logger.LogWarning("[ProcessKTDocument] Video generation skipped due to missing endpoint or API key.");
+            return null;
+        }
+
+        var docLabel = Path.GetFileNameWithoutExtension(docName);
+        var prompt = BuildVideoPrompt(docLabel, summary, scenes);
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            return null;
+        }
+
+        try
+        {
+            var baseEndpoint = endpoint.EndsWith('/') ? endpoint : endpoint + "/";
+            var targetDuration = DetermineVideoDurationSeconds(scenes.Count);
+            var payload = await SubmitVideoGenerationAsync(baseEndpoint, apiKey, videoDeployment, prompt, targetDuration);
+
+            if (payload == null || payload.VideoBytes == null || payload.VideoBytes.Length == 0)
+            {
+                _logger.LogWarning("[ProcessKTDocument] Video generation returned no payload.");
+                return null;
+            }
+
+            var clipUrl = await UploadVideoClipAsync(docName, payload.VideoBytes, payload.ContentType ?? "video/mp4");
+            if (string.IsNullOrWhiteSpace(clipUrl))
+            {
+                return null;
+            }
+
+            string? thumbnailUrl = null;
+            if (payload.ThumbnailBytes != null && payload.ThumbnailBytes.Length > 0)
+            {
+                thumbnailUrl = await UploadVideoThumbnailAsync(docName, payload.ThumbnailBytes, payload.ThumbnailContentType ?? "image/png");
+            }
+
+            if (string.IsNullOrWhiteSpace(thumbnailUrl))
+            {
+                thumbnailUrl = scenes.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.ImageUrl))?.ImageUrl;
+            }
+
+            return new VideoAsset
+            {
+                Mp4Url = clipUrl,
+                ThumbnailUrl = thumbnailUrl,
+                DurationSeconds = payload.DurationSeconds ?? targetDuration,
+                Prompt = prompt,
+                RawOperationId = payload.OperationId,
+                SourceUrl = payload.SourceUrl,
+                ThumbnailSourceUrl = payload.ThumbnailSourceUrl
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ProcessKTDocument] Azure OpenAI video generation failed for {Doc}", docName);
+            return null;
+        }
+    }
+
+    private async Task<VideoGenerationPayload?> SubmitVideoGenerationAsync(string baseEndpoint, string apiKey, string deployment, string prompt, double targetDurationSeconds)
+    {
+        var requestUri = new Uri(new Uri(baseEndpoint), $"openai/deployments/{deployment}/videos/generations:submit?api-version=2024-08-01-preview");
+        var payload = new
+        {
+            input = prompt,
+            duration = Math.Clamp((int)Math.Round(targetDurationSeconds), 20, 120),
+            aspect_ratio = "16:9",
+            format = "mp4"
+        };
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+        };
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Add("api-key", apiKey);
+
+        using var response = await HttpClient.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning("[ProcessKTDocument] Video generation submit failed HTTP {Status}: {Body}", response.StatusCode, responseBody);
+            return null;
+        }
+
+        var operationLocation = response.Headers.TryGetValues("operation-location", out var values)
+            ? values.FirstOrDefault()
+            : null;
+
+        if (string.IsNullOrWhiteSpace(operationLocation))
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            return await TryExtractVideoPayloadAsync(doc, prompt);
+        }
+
+        var operationUri = operationLocation.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            ? new Uri(operationLocation)
+            : new Uri(new Uri(baseEndpoint), operationLocation);
+
+        return await PollVideoOperationAsync(operationUri, apiKey, prompt);
+    }
+
+    private async Task<VideoGenerationPayload?> PollVideoOperationAsync(Uri operationUri, string apiKey, string prompt)
+    {
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(Math.Min(6 + attempt * 2, 24)));
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, operationUri);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.Add("api-key", apiKey);
+
+            using var response = await HttpClient.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("[ProcessKTDocument] Video operation poll HTTP {Status}: {Body}", response.StatusCode, body);
+                continue;
+            }
+
+            using var doc = JsonDocument.Parse(body);
+            var status = doc.RootElement.TryGetProperty("status", out var statusElement)
+                ? statusElement.GetString()
+                : null;
+
+            if (string.Equals(status, "running", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(status, "processing", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase))
+            {
+                var payload = await TryExtractVideoPayloadAsync(doc, prompt);
+                if (payload != null)
+                {
+                    return payload;
+                }
+
+                _logger.LogWarning("[ProcessKTDocument] Video generation succeeded but payload was empty.");
+                return null;
+            }
+
+            if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("[ProcessKTDocument] Video generation operation failed: {Body}", body);
+                return null;
+            }
+        }
+
+        _logger.LogWarning("[ProcessKTDocument] Video generation operation timed out.");
+        return null;
+    }
+
+    private async Task<VideoGenerationPayload?> TryExtractVideoPayloadAsync(JsonDocument doc, string prompt)
+    {
+        var root = doc.RootElement;
+        string? operationId = null;
+        if (root.TryGetProperty("id", out var idEl))
+        {
+            operationId = idEl.GetString();
+        }
+
+        var resultElement = root;
+        if (root.TryGetProperty("result", out var nestedResult))
+        {
+            resultElement = nestedResult;
+        }
+
+        if (resultElement.TryGetProperty("output", out var outputElement) && outputElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in outputElement.EnumerateArray())
+            {
+                string? contentType = item.TryGetProperty("content_type", out var ctEl) ? ctEl.GetString() : "video/mp4";
+                double? duration = null;
+                if (item.TryGetProperty("duration", out var durEl) && durEl.TryGetDouble(out var durValue))
+                {
+                    duration = durValue;
+                }
+                else if (item.TryGetProperty("length_seconds", out var lenEl) && lenEl.TryGetDouble(out var lenValue))
+                {
+                    duration = lenValue;
+                }
+
+                byte[]? videoBytes = null;
+                string? sourceUrl = null;
+                if (item.TryGetProperty("data", out var dataEl))
+                {
+                    var b64 = dataEl.GetString();
+                    if (!string.IsNullOrWhiteSpace(b64))
+                    {
+                        try
+                        {
+                            videoBytes = Convert.FromBase64String(b64);
+                        }
+                        catch (FormatException)
+                        {
+                            videoBytes = null;
+                        }
+                    }
+                }
+
+                if (videoBytes == null && item.TryGetProperty("url", out var urlEl))
+                {
+                    sourceUrl = urlEl.GetString();
+                    if (!string.IsNullOrWhiteSpace(sourceUrl))
+                    {
+                        try
+                        {
+                            videoBytes = await HttpClient.GetByteArrayAsync(sourceUrl);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "[ProcessKTDocument] Unable to download video asset from {Url}", sourceUrl);
+                        }
+                    }
+                }
+
+                if (videoBytes == null)
+                {
+                    continue;
+                }
+
+                byte[]? thumbnailBytes = null;
+                string? thumbnailContentType = null;
+                string? thumbnailSourceUrl = null;
+
+                if (resultElement.TryGetProperty("thumbnails", out var thumbnailsElement) && thumbnailsElement.ValueKind == JsonValueKind.Array)
+                {
+                    var thumbObject = thumbnailsElement.EnumerateArray().FirstOrDefault();
+                    if (thumbObject.ValueKind == JsonValueKind.Object)
+                    {
+                        if (thumbObject.TryGetProperty("content_type", out var thumbCtEl))
+                        {
+                            thumbnailContentType = thumbCtEl.GetString();
+                        }
+                        if (thumbObject.TryGetProperty("data", out var thumbDataEl))
+                        {
+                            var thumbB64 = thumbDataEl.GetString();
+                            if (!string.IsNullOrWhiteSpace(thumbB64))
+                            {
+                                try
+                                {
+                                    thumbnailBytes = Convert.FromBase64String(thumbB64);
+                                }
+                                catch (FormatException)
+                                {
+                                    thumbnailBytes = null;
+                                }
+                            }
+                        }
+                        if (thumbnailBytes == null && thumbObject.TryGetProperty("url", out var thumbUrlEl))
+                        {
+                            thumbnailSourceUrl = thumbUrlEl.GetString();
+                            if (!string.IsNullOrWhiteSpace(thumbnailSourceUrl))
+                            {
+                                try
+                                {
+                                    thumbnailBytes = await HttpClient.GetByteArrayAsync(thumbnailSourceUrl);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogWarning(ex, "[ProcessKTDocument] Unable to download video thumbnail from {Url}", thumbnailSourceUrl);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                return new VideoGenerationPayload(videoBytes, contentType, thumbnailBytes, thumbnailContentType, duration, prompt, operationId, sourceUrl, thumbnailSourceUrl);
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<string?> UploadVideoClipAsync(string docName, byte[] bytes, string contentType)
+    {
+        if (bytes == null || bytes.Length == 0)
+        {
+            return null;
+        }
+
+        var container = _blobServiceClient.GetBlobContainerClient("generated-video-files");
+        await container.CreateIfNotExistsAsync(PublicAccessType.Blob);
+
+        var docBase = Path.GetFileNameWithoutExtension(docName);
+        var safeDocBase = new string(docBase.Select(ch => char.IsLetterOrDigit(ch) ? char.ToLowerInvariant(ch) : '-').ToArray()).Trim('-');
+        if (string.IsNullOrWhiteSpace(safeDocBase))
+        {
+            safeDocBase = "document";
+        }
+
+        var blobName = $"{safeDocBase}/clip.mp4";
+        var blob = container.GetBlobClient(blobName);
+
+        using (var ms = new MemoryStream(bytes))
+        {
+            await blob.UploadAsync(ms, overwrite: true);
+        }
+
+        await blob.SetHttpHeadersAsync(new BlobHttpHeaders { ContentType = contentType });
+
+        if (blob.CanGenerateSasUri)
+        {
+            var builder = new BlobSasBuilder(BlobSasPermissions.Read, DateTimeOffset.UtcNow.AddYears(1))
+            {
+                BlobContainerName = container.Name,
+                BlobName = blobName
+            };
+            var sas = blob.GenerateSasUri(builder);
+            return sas.ToString();
+        }
+
+        return blob.Uri.ToString();
+    }
+
+    private async Task<string?> UploadVideoThumbnailAsync(string docName, byte[] bytes, string contentType)
+    {
+        if (bytes == null || bytes.Length == 0)
+        {
+            return null;
+        }
+
+        var container = _blobServiceClient.GetBlobContainerClient("generated-video-files");
+        await container.CreateIfNotExistsAsync(PublicAccessType.Blob);
+
+        var docBase = Path.GetFileNameWithoutExtension(docName);
+        var safeDocBase = new string(docBase.Select(ch => char.IsLetterOrDigit(ch) ? char.ToLowerInvariant(ch) : '-').ToArray()).Trim('-');
+        if (string.IsNullOrWhiteSpace(safeDocBase))
+        {
+            safeDocBase = "document";
+        }
+
+        var extension = contentType switch
+        {
+            "image/jpeg" => "jpg",
+            "image/webp" => "webp",
+            _ => "png"
+        };
+
+        var blobName = $"{safeDocBase}/thumbnail.{extension}";
+        var blob = container.GetBlobClient(blobName);
+
+        using (var ms = new MemoryStream(bytes))
+        {
+            await blob.UploadAsync(ms, overwrite: true);
+        }
+
+        await blob.SetHttpHeadersAsync(new BlobHttpHeaders { ContentType = contentType });
+
+        if (blob.CanGenerateSasUri)
+        {
+            var builder = new BlobSasBuilder(BlobSasPermissions.Read, DateTimeOffset.UtcNow.AddYears(1))
+            {
+                BlobContainerName = container.Name,
+                BlobName = blobName
+            };
+            var sas = blob.GenerateSasUri(builder);
+            return sas.ToString();
+        }
+
+        return blob.Uri.ToString();
+    }
+
+    private static double DetermineVideoDurationSeconds(int sceneCount)
+    {
+        var baseSeconds = Math.Max(1, sceneCount) * 12;
+        return Math.Clamp((double)baseSeconds, 45d, 120d);
+    }
+
+    private static string BuildVideoPrompt(string? docLabel, string summary, List<SceneData> scenes)
+    {
+        var builder = new StringBuilder();
+        var topic = string.IsNullOrWhiteSpace(docLabel) ? "the solution" : docLabel.Replace('_', ' ').Replace('-', ' ');
+        builder.AppendLine($"Create a 16:9 cinematic training video explaining {topic}. Focus on accurate technical architecture visuals, labeled diagrams, and animated system flows that align with the narration.");
+        if (!string.IsNullOrWhiteSpace(summary))
+        {
+            builder.AppendLine("Executive summary: " + summary.Trim());
+        }
+        builder.AppendLine("Storyboard shots (each bullet is a beat to cover):");
+        var index = 1;
+        foreach (var scene in scenes.Take(8))
+        {
+            builder.Append("- Shot ");
+            builder.Append(index++);
+            builder.Append(": ");
+            builder.AppendLine(scene.ToShotPrompt());
+        }
+        builder.AppendLine("Style: modern cloud blueprint aesthetic, crisp vector shapes, dynamic camera moves, no watermarks, no stock b-roll.");
+        builder.AppendLine("Include overlay annotations for primary services, data paths, and security boundaries.");
+        return builder.ToString();
+    }
+
     private async Task<GenerationResult?> TryGenerateWithAzureOpenAi(string endpoint, string apiKey, string deployment, string documentText)
     {
         var baseUri = endpoint.EndsWith('/') ? endpoint : endpoint + "/";
@@ -656,6 +1083,19 @@ public class ProcessKTDocument
         [JsonPropertyName("explanation")] public string? Explanation { get; init; }
     }
 
+    private class VideoAsset
+    {
+        public string Mp4Url { get; set; } = string.Empty;
+        public string? ThumbnailUrl { get; set; }
+        public double DurationSeconds { get; set; }
+        public string? Prompt { get; set; }
+        public string? RawOperationId { get; set; }
+        public string? SourceUrl { get; set; }
+        public string? ThumbnailSourceUrl { get; set; }
+    }
+
+    private record VideoGenerationPayload(byte[] VideoBytes, string? ContentType, byte[]? ThumbnailBytes, string? ThumbnailContentType, double? DurationSeconds, string Prompt, string? OperationId, string? SourceUrl, string? ThumbnailSourceUrl);
+
     private class SceneData
     {
         public int Index { get; set; }
@@ -731,6 +1171,27 @@ public class ProcessKTDocument
 
             VisualPrompt = ComposeVisualPrompt(DocumentLabel, SummaryContext, Title, Narration, Keywords);
             return VisualPrompt!;
+        }
+
+        public string ToShotPrompt()
+        {
+            var builder = new StringBuilder();
+            var heading = string.IsNullOrWhiteSpace(Title) ? $"Scene {Index}" : Title;
+            builder.Append(heading);
+            builder.Append(": ");
+            builder.Append(Narration);
+            if (Keywords.Any())
+            {
+                builder.Append(" | keywords: ");
+                builder.Append(string.Join(", ", Keywords));
+            }
+            var visuals = ResolveVisualPrompt();
+            if (!string.IsNullOrWhiteSpace(visuals))
+            {
+                builder.Append(" | visuals: ");
+                builder.Append(visuals);
+            }
+            return builder.ToString();
         }
 
         private static List<string> GuessKeywords(string text)

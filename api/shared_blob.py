@@ -30,6 +30,7 @@ except Exception:  # pragma: no cover - If not available we fall back
 
 UPLOAD_CONTAINER = "uploaded-docs"
 VIDEO_CONTAINER = "generated-videos"
+VIDEO_FILE_CONTAINER = "generated-video-files"
 QUIZ_CONTAINER = "quiz-data"
 
 _IN_MEMORY_STORE: dict[str, str] = {}
@@ -170,6 +171,7 @@ def generate_stub_video(doc_name: str) -> Dict[str, Any]:
 			},
 		],
 		"generated": True,
+		"videoAsset": None,
 	}
 
 
@@ -296,16 +298,24 @@ def _extract_doc_base(blob_name: str) -> str:
 
 def find_processed_artifacts(doc_base: str) -> Dict[str, Optional[str]]:
 	video_blob = None
+	video_file_blob = None
+	thumbnail_blob = None
 	quiz_blob = None
 	for name in _list_blobs(VIDEO_CONTAINER):
 		if name.endswith('.video.json') and _match_processed(doc_base, name):
 			video_blob = name
 			break
+	for name in _list_blobs(VIDEO_FILE_CONTAINER):
+		lowered = name.lower()
+		if lowered.endswith(('.mp4', '.mov', '.mkv', '.webm')) and _match_processed(doc_base, name):
+			video_file_blob = name
+		elif lowered.endswith(('.png', '.jpg', '.jpeg', '.webp')) and _match_processed(doc_base, name):
+			thumbnail_blob = name if thumbnail_blob is None else thumbnail_blob
 	for name in _list_blobs(QUIZ_CONTAINER):
 		if name.endswith('.quiz.json') and _match_processed(doc_base, name):
 			quiz_blob = name
 			break
-	return {"video": video_blob, "quiz": quiz_blob}
+	return {"video": video_blob, "videoFile": video_file_blob, "thumbnail": thumbnail_blob, "quiz": quiz_blob}
 
 
 def load_processed_video(doc_base: str) -> Optional[Dict[str, Any]]:
@@ -349,6 +359,8 @@ def list_known_doc_bases() -> List[str]:
 	for blob in _list_blobs(VIDEO_CONTAINER):
 		if blob.endswith('.video.json'):
 			bases.add(_extract_doc_base(blob))
+	for blob in _list_blobs(VIDEO_FILE_CONTAINER):
+		bases.add(_extract_doc_base(blob))
 	for blob in _list_blobs(QUIZ_CONTAINER):
 		if blob.endswith('.quiz.json'):
 			bases.add(_extract_doc_base(blob))

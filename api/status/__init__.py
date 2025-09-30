@@ -11,7 +11,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:  # type: ignore
 		return func.HttpResponse(json.dumps({"error": "Missing docName"}), status_code=400, mimetype="application/json")
 	base = doc
 	artifacts = find_processed_artifacts(base)
-	video_ready = artifacts.get("video") is not None
+	video_ready = artifacts.get("video") is not None and artifacts.get("videoFile") is not None
 	quiz_ready = artifacts.get("quiz") is not None
 	ready = video_ready and quiz_ready
 	payload = {

@@ -15,6 +15,8 @@ let appState = {
 
 let videoScenes = []; // normalized scenes currently loaded into the player
 let playbackInterval = null; // interval handle for autoplay
+let videoAsset = null; // current generated video asset (Sora output)
+let videoListenersAttached = false;
 
 // DOM elements
 const elements = {
@@ -47,6 +49,8 @@ const elements = {
     sceneIndex: document.getElementById('sceneIndex'),
     sceneCount: document.getElementById('sceneCount'),
     sceneIndicatorRow: document.getElementById('sceneIndicatorRow'),
+    storyboardVideo: document.getElementById('storyboardVideo'),
+    videoControls: document.querySelector('.video-controls'),
     
     // Quiz section
     quizQuestions: document.getElementById('quizQuestions'),
@@ -183,8 +187,15 @@ function handleWatchVideo() {
     if (!videoScenes.length && loadedVideoData?.scenes) {
         hydrateStoryboardFromJson(loadedVideoData);
     }
-    pausePlayback();
     updateVideoPlayer();
+
+    if (videoAsset?.mp4Url && elements.storyboardVideo) {
+        elements.storyboardVideo.play().catch(() => {
+            /* Autoplay might be blocked; user can press play manually */
+        });
+    } else {
+        pausePlayback();
+    }
 
     setTimeout(() => {
         elements.takeQuizButton.style.display = 'block';
@@ -194,6 +205,19 @@ function handleWatchVideo() {
 
 function handlePlayPause() {
     if (!videoScenes.length) return;
+
+    if (videoAsset?.mp4Url && elements.storyboardVideo) {
+        const videoEl = elements.storyboardVideo;
+        if (videoEl.ended) {
+            videoEl.currentTime = 0;
+        }
+        if (videoEl.paused) {
+            videoEl.play().catch(() => {});
+        } else {
+            videoEl.pause();
+        }
+        return;
+    }
 
     if (!appState.isVideoPlaying && appState.currentProgress >= 100) {
         updateScene(0, { progressOverride: 0 });
@@ -208,6 +232,10 @@ function handlePlayPause() {
 
 function startPlayback() {
     if (!videoScenes.length) return;
+    if (videoAsset?.mp4Url && elements.storyboardVideo) {
+        elements.storyboardVideo.play().catch(() => {});
+        return;
+    }
     clearInterval(playbackInterval);
 
     appState.isVideoPlaying = true;
@@ -241,6 +269,22 @@ function startPlayback() {
 
 function pausePlayback(options = {}) {
     const { reachedEnd = false } = options;
+    if (videoAsset?.mp4Url && elements.storyboardVideo) {
+        const videoEl = elements.storyboardVideo;
+        videoEl.pause();
+        if (reachedEnd) {
+            if (Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
+                videoEl.currentTime = videoEl.duration;
+            }
+            appState.currentProgress = 100;
+            elements.playPauseButton.innerHTML = '<i class="fas fa-rotate-right"></i>';
+        } else {
+            elements.playPauseButton.innerHTML = '<i class="fas fa-play"></i>';
+        }
+        appState.isVideoPlaying = false;
+        updateTimeDisplay();
+        return;
+    }
     if (playbackInterval) {
         clearInterval(playbackInterval);
         playbackInterval = null;
@@ -252,6 +296,17 @@ function pausePlayback(options = {}) {
 function handleProgressChange(event) {
     if (!videoScenes.length) return;
     const value = parseInt(event.target.value, 10);
+    if (videoAsset?.mp4Url && elements.storyboardVideo) {
+        const videoEl = elements.storyboardVideo;
+        const duration = Number(videoEl.duration) || videoAsset.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
+        if (Number.isFinite(duration) && duration > 0) {
+            const targetTime = Math.min(100, Math.max(0, value)) / 100 * duration;
+            videoEl.currentTime = targetTime;
+        }
+        appState.currentProgress = Math.min(100, Math.max(0, value));
+        updateTimeDisplay();
+        return;
+    }
     const sceneIndex = Math.min(videoScenes.length - 1, Math.floor((value / 100) * videoScenes.length));
     pausePlayback();
     updateScene(sceneIndex, { progressOverride: value });
@@ -259,12 +314,31 @@ function handleProgressChange(event) {
 
 function jumpScene(delta) {
     if (!videoScenes.length) return;
+    if (videoAsset?.mp4Url && elements.storyboardVideo) {
+        const videoEl = elements.storyboardVideo;
+        const nextIndex = Math.min(videoScenes.length - 1, Math.max(0, appState.currentSceneIndex + delta));
+        const duration = Number(videoEl.duration) || videoAsset.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
+        if (Number.isFinite(duration) && duration > 0) {
+            const fraction = nextIndex / videoScenes.length;
+            videoEl.currentTime = fraction * duration;
+        }
+        updateScene(nextIndex, { suppressProgressSync: true });
+        return;
+    }
     const nextIndex = Math.min(videoScenes.length - 1, Math.max(0, appState.currentSceneIndex + delta));
     pausePlayback();
     updateScene(nextIndex);
 }
 
 function updateTimeDisplay() {
+    if (videoAsset?.mp4Url && elements.storyboardVideo) {
+        const videoEl = elements.storyboardVideo;
+        const duration = Number(videoEl.duration) || videoAsset.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
+        const currentSeconds = Number.isFinite(videoEl.currentTime) ? videoEl.currentTime : (appState.currentProgress / 100) * duration;
+        elements.currentTime.textContent = formatTime(currentSeconds);
+        elements.totalTime.textContent = formatTime(duration);
+        return;
+    }
     const total = Math.max(appState.totalDurationSeconds, videoScenes.length * SCENE_DURATION_SECONDS);
     const currentSeconds = Math.round((appState.currentProgress / 100) * total);
     elements.currentTime.textContent = formatTime(currentSeconds);
@@ -277,8 +351,12 @@ function updateVideoPlayer() {
     }
 
     updateScene(appState.currentSceneIndex ?? 0, { progressOverride: appState.currentProgress });
-    elements.progressBar.value = Math.round(appState.currentProgress);
-    updateTimeDisplay();
+    if (videoAsset?.mp4Url) {
+        syncVideoProgressFromElement();
+    } else {
+        elements.progressBar.value = Math.round(appState.currentProgress);
+        updateTimeDisplay();
+    }
 }
 
 // Quiz functionality
@@ -481,9 +559,12 @@ function hydrateStoryboardFromJson(videoJson) {
         buildSceneFromText(videoJson?.summary || 'This document did not include scene details, so this is a generated overview.', 0)
     ];
 
+    const asset = normalizeVideoAsset(videoJson?.videoAsset);
+    configureVideoAsset(asset);
+
     appState.currentSceneIndex = 0;
     appState.currentProgress = 0;
-    appState.totalDurationSeconds = videoScenes.length * SCENE_DURATION_SECONDS;
+    appState.totalDurationSeconds = videoAsset?.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
 
     renderSceneIndicators();
     updateScene(0, { progressOverride: 0 });
@@ -518,6 +599,129 @@ function normalizeScenes(rawScenes, fallbackSummary) {
             };
         })
         .filter(Boolean);
+}
+
+function normalizeVideoAsset(raw) {
+    if (!raw || !raw.mp4Url) return null;
+    const duration = Number(raw.durationSeconds);
+    return {
+        mp4Url: raw.mp4Url,
+        thumbnailUrl: raw.thumbnailUrl || null,
+        durationSeconds: Number.isFinite(duration) && duration > 0 ? duration : 0,
+        prompt: raw.prompt || '',
+        operationId: raw.operationId || raw.id || null,
+        sourceUrl: raw.sourceUrl || null,
+        thumbnailSourceUrl: raw.thumbnailSourceUrl || null
+    };
+}
+
+function configureVideoAsset(asset) {
+    const videoEl = elements.storyboardVideo;
+    if (!videoEl) return;
+
+    if (asset && asset.mp4Url) {
+        videoAsset = asset;
+        videoEl.src = asset.mp4Url;
+        videoEl.classList.add('active');
+        videoEl.setAttribute('controls', 'controls');
+        videoEl.playsInline = true;
+        videoEl.loop = false;
+        videoEl.muted = false;
+        if (asset.thumbnailUrl) {
+            videoEl.poster = asset.thumbnailUrl;
+        } else if (asset.thumbnailSourceUrl) {
+            videoEl.poster = asset.thumbnailSourceUrl;
+        } else if (videoScenes[0]?.imageUrl) {
+            videoEl.poster = videoScenes[0].imageUrl;
+        } else {
+            videoEl.removeAttribute('poster');
+        }
+        videoEl.load();
+        if (!videoListenersAttached) {
+            attachVideoEventListeners();
+        }
+        if (asset.durationSeconds) {
+            appState.totalDurationSeconds = asset.durationSeconds;
+        }
+        if (elements.sceneBackdrop) {
+            elements.sceneBackdrop.classList.add('has-video');
+        }
+        updateTimeDisplay();
+    } else {
+        if (videoAsset && elements.storyboardVideo) {
+            elements.storyboardVideo.pause();
+        }
+        videoAsset = null;
+        videoEl.classList.remove('active');
+        videoEl.removeAttribute('src');
+        videoEl.removeAttribute('poster');
+        videoEl.removeAttribute('controls');
+        if (elements.sceneBackdrop) {
+            elements.sceneBackdrop.classList.remove('has-video');
+        }
+        appState.totalDurationSeconds = videoScenes.length * SCENE_DURATION_SECONDS;
+        updateTimeDisplay();
+    }
+}
+
+function attachVideoEventListeners() {
+    const videoEl = elements.storyboardVideo;
+    if (!videoEl || videoListenersAttached) return;
+    videoListenersAttached = true;
+
+    videoEl.addEventListener('play', () => {
+        appState.isVideoPlaying = true;
+        elements.playPauseButton.innerHTML = '<i class="fas fa-pause"></i>';
+    });
+
+    videoEl.addEventListener('pause', () => {
+        if (videoEl.ended) return;
+        appState.isVideoPlaying = false;
+        elements.playPauseButton.innerHTML = '<i class="fas fa-play"></i>';
+    });
+
+    videoEl.addEventListener('ended', () => {
+        appState.isVideoPlaying = false;
+        appState.currentProgress = 100;
+        elements.playPauseButton.innerHTML = '<i class="fas fa-rotate-right"></i>';
+        elements.progressBar.value = 100;
+        updateTimeDisplay();
+    });
+
+    videoEl.addEventListener('timeupdate', () => {
+        syncVideoProgressFromElement();
+    });
+
+    videoEl.addEventListener('loadedmetadata', () => {
+        if (videoAsset) {
+            const duration = Number(videoEl.duration);
+            if (Number.isFinite(duration) && duration > 0) {
+                videoAsset.durationSeconds = duration;
+            }
+        }
+        syncVideoProgressFromElement();
+    });
+}
+
+function syncVideoProgressFromElement() {
+    if (!videoAsset || !elements.storyboardVideo) return;
+    const videoEl = elements.storyboardVideo;
+    const duration = Number(videoEl.duration) || videoAsset.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
+    if (!Number.isFinite(duration) || duration <= 0) return;
+
+    const progress = Math.min(100, Math.max(0, (videoEl.currentTime / duration) * 100));
+    appState.currentProgress = progress;
+    elements.progressBar.value = Math.round(progress);
+    appState.totalDurationSeconds = duration;
+
+    if (videoScenes.length) {
+        const sceneIndex = Math.min(videoScenes.length - 1, Math.floor((progress / 100) * videoScenes.length));
+        if (sceneIndex !== appState.currentSceneIndex) {
+            updateScene(sceneIndex, { suppressProgressSync: true });
+        }
+    }
+
+    updateTimeDisplay();
 }
 
 function buildSceneFromText(text, idx) {

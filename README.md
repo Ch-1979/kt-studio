@@ -1,4 +1,129 @@
-# AI-Powered KT Studio (Frontend MVP)
+# AI-Powered KT Studio
+
+AI-Powered KT Studio turns any uploaded knowledge-transfer document into a narrated explainer video and an aligned knowledge check. The pipeline fuses Azure OpenAI text understanding, Sora video generation, and quiz authoring so trainers can hand customers a complete enablement kit with minimal manual effort.
+
+## ✨ What ships today
+- **Document ingestion** – Blob-triggered .NET isolated Azure Function reads the uploaded file and extracts paragraphs for grounding.
+- **Storyboarding** – Azure OpenAI (`gpt-4o-mini` or compatible) returns a constrained JSON package containing the summary, 3–6 scenes, and quiz questions. Each scene now includes a carefully crafted `visualPrompt` describing the architecture to render.
+- **Scene imagery** – Optional Azure OpenAI image deployment (DALL·E 3 or `gpt-image-1`) generates stills per scene for fallback/overlay.
+- **Text → Video** – Sora (Azure OpenAI video deployment) synthesizes a 16:9 cinematic clip that visualizes the architecture and narration derived from the storyboard. The rendered MP4 plus thumbnail are stored in `generated-video-files` with year-long SAS URLs.
+- **Quiz authoring** – The same pipeline emits scored, explainable multiple-choice questions and stores them in `quiz-data`.
+- **Frontend playback** – The Static Web App loads the JSON manifest, hydrates the storyboard overlay, and streams the Sora MP4 directly in the player while still exposing scene context and keyword chips. If Sora is unavailable, it gracefully falls back to the animated storyboard experience.
+
+## 🧱 Solution architecture
+| Layer | Tech | Role |
+|-------|------|------|
+| Static Web App | HTML/CSS/JS (`index.html`, `style.css`, `script.js`) | Upload UI, video playback, quiz UX |
+| API (SWA Functions) | Python Azure Functions (`api/`) | Upload endpoint, status polling, manifest fetch |
+| Processing | .NET 8 isolated Azure Function (`csharp-functions/ProcessKTDocument.cs`) | Blob trigger, OpenAI orchestration, Sora integration, blob persistence |
+| Storage | Azure Blob Storage | Containers: `uploaded-docs`, `generated-videos`, `generated-video-files`, `quiz-data`, `storyboard-images` |
+| AI Providers | Azure OpenAI (text + image + video) | Structured storyboard + quiz, scene art, Sora video |
+
+### Processing flow
+1. User uploads a `.docx`, `.pdf`, or `.txt` via `/api/upload` (Python Function). The blob lands in `uploaded-docs`.
+2. Blob trigger `ProcessKTDocument` fires. It:
+   - Calls Azure OpenAI chat deployment with a JSON schema to obtain summary, scenes, prompts, quiz.
+   - Enriches each scene with document context and visual prompts.
+   - Generates optional still imagery via the configured image deployment.
+   - Builds a long-form prompt and submits it to the Sora video deployment. The function polls the operation until the MP4 is ready, downloads it, and stores it in `generated-video-files` along with an extracted thumbnail.
+   - Writes `*.video.json` (manifest + video metadata) to `generated-videos` and `*.quiz.json` to `quiz-data`.
+3. Frontend polls `/api/status/{docBase}` until both the JSON manifest **and** the MP4 exist. Once ready it fetches `/api/video/{docBase}` and `/api/quiz/{docBase}`.
+4. The player streams the Sora clip inside the storyboard card, keeping the textual overlay, progress sync, and quiz entry point.
+
+## ⚙️ Required configuration
+Configure these app settings on the C# Function App (and your local `local.settings.json` when testing):
+
+```
+AzureOpenAI:Endpoint         = https://<your-openai-resource>.openai.azure.com/
+AzureOpenAI:ApiKey           = <api-key>
+AzureOpenAI:Deployment       = gpt-4o-mini           # text/json generation
+AzureOpenAI:ImageDeployment  = dall-e-3              # optional, for scene stills
+AzureOpenAI:VideoDeployment  = sora-1                # Sora text-to-video deployment name
+```
+
+> 🔐 Sora is currently in limited access. Ensure your Azure OpenAI resource is enabled for the chosen video deployment and that the Function App has network access to it.
+
+The Python Functions use the storage connection string exposed by Static Web Apps (`AzureWebJobsStorage`). No additional secrets are required unless you expose extra services.
+
+## 📦 Blob containers
+| Container | Purpose |
+|-----------|---------|
+| `uploaded-docs` | Raw user uploads (trigger source) |
+| `generated-videos` | Storyboard manifest (`*.video.json`) |
+| `generated-video-files` | Sora-rendered MP4s and thumbnails (SAS readable) |
+| `quiz-data` | Quiz payloads (`*.quiz.json`) |
+| `storyboard-images` | Optional per-scene still imagery |
+
+All containers are auto-created by the code if they do not exist.
+
+## 🖥️ Local development
+### Frontend only
+```powershell
+# From repo root
+python -m http.server 5500
+# or use VS Code Live Server / double-click index.html
+```
+
+### Python Functions (HTTP API)
+```powershell
+cd api
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+func start
+```
+Static Web Apps CLI can proxy the frontend + API locally if desired.
+
+### C# Blob trigger
+1. Install the .NET 8 SDK and Azure Functions Core Tools v4.
+2. Update `csharp-functions/local.settings.json` with the Azure Storage connection string and OpenAI keys.
+3. Run:
+   ```powershell
+   cd csharp-functions
+   dotnet restore
+   func start
+   ```
+4. Upload a sample file to the Azurite dev store or your real storage account; watch logs for generation events.
+
+> ⚠️ Sora rendering can take 1–3 minutes. The function polls the operation for up to ~4 minutes before timing out and logging a warning.
+
+## 🚀 Deployment checklist
+1. **Static Web App** – Each push to `main` triggers `.github/workflows/azure-static-web-app.yml` and deploys the frontend + Python API.
+2. **C# Function App** – Deploy via `dotnet publish`/`func azure functionapp publish`, or wire up the provided GitHub Action (`deploy-csharp-functions.yml`) with a publish profile secret.
+3. **App settings** – Set the OpenAI keys and deployment names on the Function App. Restart after saving.
+4. **Storage** – Ensure the Function App and SWA share the same storage account, or adjust the connection strings accordingly.
+5. **Monitoring** – Use Application Insights or Azure Monitor logs to watch Sora job durations, failures, and blob writes.
+
+## 🔍 Key API endpoints
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/upload?name=<file>` | POST | Uploads binary document to `uploaded-docs` |
+| `/api/status/{docBase}` | GET | Returns readiness plus blob artifact names |
+| `/api/video/{docBase}` | GET | Fetches generated storyboard manifest (with `videoAsset`) |
+| `/api/quiz/{docBase}` | GET | Returns quiz questions for the document |
+| `/api/list/docs` | GET | Lists known processed document bases |
+
+## 🧪 Quality gates
+- **Build**: `dotnet build` inside `csharp-functions` (requires .NET 8 SDK locally).
+- **Lint**: Python Functions rely on `flake8` / `pylint` if you enable them (not bundled).
+- **Smoke test**: Upload a doc, confirm the status flips to ready, click **Watch Video**, ensure the MP4 streams, then take the quiz.
+
+## 🛠️ Troubleshooting
+| Symptom | Likely cause | Remedy |
+|---------|--------------|--------|
+| Status stuck at `video …` | Sora operation still running or failed | Check Function App logs (`Video generation operation failed`). Verify `AzureOpenAI:VideoDeployment` name and access |
+| Video plays but overlay frozen at Scene 1 | Browser blocked autoplay with sound | Click **Play** manually; consider muting by default or prompting the user |
+| Quiz missing | `*.quiz.json` not written | Inspect OpenAI response, ensure schema fields returned |
+| HTTP 500 on upload | Storage connection string missing or invalid | Confirm `AzureWebJobsStorage` and SAS permissions |
+| Video JSON present but MP4 empty | Sora response lacked asset URLs | The function falls back gracefully; review logs and adjust prompt or deployment |
+
+## 🧭 Roadmap ideas
+- Natural language prompt editing before Sora submission.
+- Multi-language narration & subtitles via Azure Speech + translation.
+- Versioned quizzes with analytics tracking learner performance.
+- Governance hooks: content approval, watermarking, retention policies.
+
+Bring your own Azure OpenAI deployments (text, image, video) and the studio handles the rest. 🎬# AI-Powered KT Studio (Frontend MVP)
 
 This is the initial static frontend prototype for the AI-Powered KT (Knowledge Transition) Studio. It lets a user:
 

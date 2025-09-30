@@ -9,9 +9,10 @@ Pipeline steps:
 1. Read original document text
 2. Call Azure OpenAI to produce: summary, structured storyboard scenes, and quiz questions
 3. Each scene now carries a `visualPrompt` that requests a clean technical architecture or workflow diagram aligned with the source content.
-4. Optionally call Azure OpenAI image generation to create a visual for each scene (stored in `storyboard-images`)
-5. Store video JSON (including scene metadata + image URLs) in `generated-videos`
-6. Store quiz JSON in `quiz-data`
+4. Optionally call Azure OpenAI image generation to create a visual for each scene (stored in `storyboard-images`).
+5. Submit a long-form cinematic prompt to the configured Sora deployment, poll until the MP4 is ready, then store the clip + thumbnail in `generated-video-files`.
+6. Store video JSON (including scene metadata, video asset metadata, and still-image URLs) in `generated-videos`.
+7. Store quiz JSON in `quiz-data`.
 
 All containers are auto-created if missing (private access).
 
@@ -32,7 +33,8 @@ All containers are auto-created if missing (private access).
     "AzureOpenAI:Endpoint": "https://YOUR_OPENAI_RESOURCE.openai.azure.com/",
     "AzureOpenAI:ApiKey": "YOUR_OPENAI_KEY",
     "AzureOpenAI:Deployment": "gpt-4o-mini",
-    "AzureOpenAI:ImageDeployment": "gpt-image-1"
+    "AzureOpenAI:ImageDeployment": "gpt-image-1",
+    "AzureOpenAI:VideoDeployment": "sora-1"
   }
 }
 ```
@@ -40,6 +42,8 @@ All containers are auto-created if missing (private access).
 Replace the placeholder values with real keys from Azure Portal.
 
 > ℹ️ **Image deployments:** Set `AzureOpenAI:ImageDeployment` to the name of your Azure OpenAI image model (for example `gpt-image-1` or `dall-e-3`). DALL·E 3 in Azure runs as an asynchronous job; the function now submits the request and polls until the operation finishes. Azure currently supports square or cinematic aspect ratios (for example `1024x1024` or `1792x1024`).
+
+> 🎬 **Video deployments (Sora):** Set `AzureOpenAI:VideoDeployment` to the Azure OpenAI video model (for example `sora-1`). The function submits a long-running video generation job and polls `operation-location` until the MP4 and thumbnail are available. Plan for 1–3 minutes of processing per clip.
 
 ## Running Locally
 Prerequisites: .NET 8 SDK, Azure Storage Emulator (Azurite) or real storage account.

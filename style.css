@@ -253,73 +253,174 @@ body {
 
 /* Video Player Card */
 .video-player-card {
-    background: #1a1a1a;
+    background: #111827;
     color: white;
-    padding: 20px;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
 }
 
-.video-player-card h3 {
+.video-player-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+.video-player-header h3 {
     color: white;
-    margin-bottom: 20px;
-    font-size: 18px;
+    font-size: 20px;
+    font-weight: 600;
+}
+
+.video-mode-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(59, 130, 246, 0.2);
+    color: #93c5fd;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    font-weight: 600;
 }
 
 .video-content {
-    margin-bottom: 20px;
-}
-
-.video-display {
-    text-align: center;
-    margin-bottom: 15px;
-}
-
-.video-display img {
-    max-width: 100%;
-    height: auto;
-    border-radius: 4px;
     margin-bottom: 10px;
 }
 
-.video-text {
-    background: #2a2a2a;
-    padding: 15px;
-    border-radius: 6px;
-    font-size: 14px;
-    line-height: 1.5;
+.scene-backdrop {
+    position: relative;
+    min-height: 260px;
+    border-radius: 16px;
+    overflow: hidden;
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+    background: linear-gradient(135deg, #1e3a8a, #0f172a);
+    transition: background 0.6s ease;
+}
+
+.scene-overlay {
+    padding: 28px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 16px;
+    width: 100%;
+    background: linear-gradient(160deg, rgba(15, 23, 42, 0.2) 10%, rgba(15, 23, 42, 0.85) 70%);
+}
+
+.scene-top-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.scene-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background-color: rgba(15, 23, 42, 0.6);
+    color: #bfdbfe;
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.scene-title {
+    font-size: 24px;
+    font-weight: 600;
+    color: white;
+}
+
+.scene-body {
+    font-size: 16px;
+    line-height: 1.6;
+    color: rgba(226, 232, 240, 0.95);
+}
+
+.scene-keywords {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.scene-keywords span {
+    padding: 6px 10px;
+    border-radius: 999px;
+    background-color: rgba(148, 163, 184, 0.2);
+    color: #e2e8f0;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.scene-keywords span.new-keyword {
+    animation: keywordPop 0.4s ease;
+    background-color: rgba(59, 130, 246, 0.35);
+}
+
+@keyframes keywordPop {
+    from {
+        transform: scale(0.9);
+        opacity: 0.2;
+    }
+    to {
+        transform: scale(1);
+        opacity: 1;
+    }
 }
 
 /* Video Controls */
 .video-controls {
-    background: #2a2a2a;
-    padding: 15px;
-    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.75);
+    padding: 16px;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
 }
 
 .progress-container {
-    margin-bottom: 10px;
+    margin-bottom: 0;
 }
 
 .progress-bar {
     width: 100%;
     height: 4px;
-    background: #444;
+    background: #374151;
     outline: none;
-    border-radius: 2px;
+    border-radius: 999px;
 }
 
 .progress-bar::-webkit-slider-thumb {
     appearance: none;
     width: 16px;
     height: 16px;
-    background: #1976d2;
+    background: #38bdf8;
     border-radius: 50%;
+    cursor: pointer;
+}
+
+.progress-bar::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #38bdf8;
+    border-radius: 50%;
+    border: none;
     cursor: pointer;
 }
 
 .control-buttons {
     display: flex;
     align-items: center;
-    gap: 15px;
+    gap: 16px;
 }
 
 .control-btn {
@@ -339,30 +440,42 @@ body {
 
 .time-display {
     font-size: 14px;
-    color: #ccc;
+    color: rgba(226, 232, 240, 0.8);
 }
 
-.volume-container {
+.scene-counter {
+    margin-left: auto;
+    font-size: 13px;
+    color: rgba(226, 232, 240, 0.8);
+    font-weight: 500;
+}
+
+.scene-indicators {
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
 }
 
-.volume-control {
-    width: 80px;
-    height: 4px;
-    background: #444;
-    outline: none;
-    border-radius: 2px;
-}
-
-.volume-control::-webkit-slider-thumb {
-    appearance: none;
+.scene-indicator {
     width: 12px;
     height: 12px;
-    background: #1976d2;
     border-radius: 50%;
+    background-color: rgba(148, 163, 184, 0.3);
+    border: none;
+    padding: 0;
     cursor: pointer;
+    transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+.scene-indicator:hover {
+    transform: scale(1.1);
+    background-color: rgba(148, 163, 184, 0.6);
+}
+
+.scene-indicator.active {
+    background-color: #38bdf8;
+    box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.2);
 }
 
 /* Quiz Card */

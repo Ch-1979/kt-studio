@@ -157,9 +157,10 @@ def generate_stub_quiz(doc_name: str) -> Dict[str, Any]:
 		"doc": doc_name,
 		"questions": [
 			{
-				"q": f"What is the primary purpose of {doc_name}?",
+				"id": "q1",
+				"text": f"What is the primary purpose of {doc_name}?",
 				"options": ["Purpose A", "Purpose B", "Purpose C", "Purpose D"],
-				"answer": 0,
+				"correctIndex": 0,
 			},
 		],
 	}
@@ -253,9 +254,9 @@ def _match_processed(doc_base: str, blob_name: str) -> bool:
 		core = candidate[:-10]
 	else:
 		core = candidate
-	# Remove extension like .txt if present
-	if core.endswith('.txt'):
-		core = core[:-4]
+	# Remove extension (e.g., .txt, .docx, .pdf) if present
+	if '.' in core:
+		core = core.rsplit('.', 1)[0]
 	return core.lower() == doc_base.lower()
 
 

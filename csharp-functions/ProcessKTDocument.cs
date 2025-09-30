@@ -195,8 +195,7 @@ public class ProcessKTDocument
             return;
         }
 
-        var baseUri = endpoint.EndsWith('/') ? endpoint : endpoint + "/";
-        var requestUri = new Uri(new Uri(baseUri), $"openai/deployments/{imageDeployment}/images/generations?api-version=2024-02-15-preview");
+        var size = DetermineImageSize(imageDeployment);
 
         for (var i = 0; i < scenes.Count; i++)
         {
@@ -207,36 +206,11 @@ public class ProcessKTDocument
 
             try
             {
-                var payload = new
-                {
-                    prompt,
-                    size = "832x468",
-                    n = 1,
-                    response_format = "b64_json"
-                };
-
-                using var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
-                {
-                    Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
-                };
-                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                request.Headers.Add("api-key", apiKey);
-
-                using var response = await HttpClient.SendAsync(request);
-                if (!response.IsSuccessStatusCode)
-                {
-                    var body = await response.Content.ReadAsStringAsync();
-                    _logger.LogWarning("[ProcessKTDocument] Image generation failed for scene {Scene} HTTP {Status}: {Body}", scene.Index, response.StatusCode, body);
-                    continue;
-                }
-
-                var raw = await response.Content.ReadAsStringAsync();
-                if (!TryExtractImageBase64(raw, out var b64) || string.IsNullOrWhiteSpace(b64))
+                var bytes = await GenerateImageBytesAsync(endpoint, apiKey, imageDeployment, prompt, size);
+                if (bytes == null || bytes.Length == 0)
                 {
                     continue;
                 }
-
-                var bytes = Convert.FromBase64String(b64);
                 var imageUrl = await UploadSceneImageAsync(docName, scene.Index, bytes);
                 if (!string.IsNullOrWhiteSpace(imageUrl))
                 {
@@ -248,30 +222,6 @@ public class ProcessKTDocument
             {
                 _logger.LogWarning(ex, "[ProcessKTDocument] Unable to generate image for scene {Scene}", scene.Index);
             }
-        }
-    }
-
-    private static bool TryExtractImageBase64(string raw, out string? b64)
-    {
-        b64 = null;
-        try
-        {
-            using var doc = JsonDocument.Parse(raw);
-            if (!doc.RootElement.TryGetProperty("data", out var dataArray) || dataArray.GetArrayLength() == 0)
-            {
-                return false;
-            }
-            var item = dataArray[0];
-            if (item.TryGetProperty("b64_json", out var b64Element))
-            {
-                b64 = b64Element.GetString();
-                return !string.IsNullOrWhiteSpace(b64);
-            }
-            return false;
-        }
-        catch
-        {
-            return false;
         }
     }
 
@@ -309,6 +259,226 @@ public class ProcessKTDocument
 
         return blob.Uri.ToString();
     }
+
+    private static string DetermineImageSize(string deployment)
+    {
+        return UsesAsyncImageGeneration(deployment) ? "1024x1024" : "832x468";
+    }
+
+    private static bool UsesAsyncImageGeneration(string? deployment)
+    {
+        if (string.IsNullOrWhiteSpace(deployment)) return false;
+        return deployment.Contains("dall", StringComparison.OrdinalIgnoreCase) || deployment.Contains("sora", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<byte[]?> GenerateImageBytesAsync(string endpoint, string apiKey, string deployment, string prompt, string size)
+    {
+        var baseUri = endpoint.EndsWith('/') ? endpoint : endpoint + "/";
+        if (UsesAsyncImageGeneration(deployment))
+        {
+            return await GenerateImageBytesAsyncLongRunning(baseUri, apiKey, deployment, prompt, size);
+        }
+        else
+        {
+            return await GenerateImageBytesAsyncImmediate(baseUri, apiKey, deployment, prompt, size);
+        }
+    }
+
+    private async Task<byte[]?> GenerateImageBytesAsyncImmediate(string baseEndpoint, string apiKey, string deployment, string prompt, string size)
+    {
+        var requestUri = new Uri(new Uri(baseEndpoint), $"openai/deployments/{deployment}/images/generations?api-version=2024-02-15-preview");
+        var payload = new
+        {
+            prompt,
+            size,
+            n = 1,
+            response_format = "b64_json"
+        };
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+        };
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Add("api-key", apiKey);
+
+        using var response = await HttpClient.SendAsync(request);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            _logger.LogWarning("[ProcessKTDocument] Image generation failed (sync) HTTP {Status}: {Body}", response.StatusCode, body);
+            return null;
+        }
+
+        var raw = await response.Content.ReadAsStringAsync();
+        var payloadInfo = TryExtractImagePayload(raw);
+        if (payloadInfo == null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(payloadInfo.Base64))
+        {
+            return Convert.FromBase64String(payloadInfo.Base64);
+        }
+
+        if (!string.IsNullOrWhiteSpace(payloadInfo.Url))
+        {
+            return await HttpClient.GetByteArrayAsync(payloadInfo.Url);
+        }
+
+        return null;
+    }
+
+    private async Task<byte[]?> GenerateImageBytesAsyncLongRunning(string baseEndpoint, string apiKey, string deployment, string prompt, string size)
+    {
+        var submitUri = new Uri(new Uri(baseEndpoint), $"openai/deployments/{deployment}/images/generations:submit?api-version=2024-02-15-preview");
+        var payload = new
+        {
+            prompt,
+            size,
+            n = 1,
+            response_format = "b64_json"
+        };
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, submitUri)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+        };
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Add("api-key", apiKey);
+
+        using var response = await HttpClient.SendAsync(request);
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            _logger.LogWarning("[ProcessKTDocument] Image generation submit failed (async) HTTP {Status}: {Body}", response.StatusCode, body);
+            return null;
+        }
+
+        var operationLocation = response.Headers.TryGetValues("operation-location", out var values)
+            ? values.FirstOrDefault()
+            : null;
+
+        if (string.IsNullOrWhiteSpace(operationLocation))
+        {
+            // Some deployments may still return inline response
+            var inlineRaw = await response.Content.ReadAsStringAsync();
+            var inlinePayload = TryExtractImagePayload(inlineRaw);
+            if (inlinePayload?.Base64 != null)
+            {
+                return Convert.FromBase64String(inlinePayload.Base64);
+            }
+            if (!string.IsNullOrWhiteSpace(inlinePayload?.Url))
+            {
+                return await HttpClient.GetByteArrayAsync(inlinePayload.Url);
+            }
+            _logger.LogWarning("[ProcessKTDocument] Async image generation returned no operation-location header.");
+            return null;
+        }
+
+        var operationUri = operationLocation.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+            ? new Uri(operationLocation)
+            : new Uri(new Uri(baseEndpoint), operationLocation);
+
+        return await PollImageOperationAsync(operationUri, apiKey);
+    }
+
+    private async Task<byte[]?> PollImageOperationAsync(Uri operationUri, string apiKey)
+    {
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(Math.Min(2 + attempt, 10)));
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, operationUri);
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.Add("api-key", apiKey);
+
+            using var response = await HttpClient.SendAsync(request);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                _logger.LogWarning("[ProcessKTDocument] Image operation poll failed HTTP {Status}: {Body}", response.StatusCode, body);
+                return null;
+            }
+
+            var raw = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(raw);
+            if (!doc.RootElement.TryGetProperty("status", out var statusProp))
+            {
+                continue;
+            }
+
+            var status = statusProp.GetString();
+            if (string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!doc.RootElement.TryGetProperty("result", out var result) || !result.TryGetProperty("data", out var dataArray) || dataArray.GetArrayLength() == 0)
+                {
+                    _logger.LogWarning("[ProcessKTDocument] Image generation succeeded but returned no data.");
+                    return null;
+                }
+
+                var payload = dataArray[0];
+                if (payload.TryGetProperty("b64_json", out var b64Element) && !string.IsNullOrWhiteSpace(b64Element.GetString()))
+                {
+                    return Convert.FromBase64String(b64Element.GetString()!);
+                }
+
+                if (payload.TryGetProperty("url", out var urlElement) && !string.IsNullOrWhiteSpace(urlElement.GetString()))
+                {
+                    return await HttpClient.GetByteArrayAsync(urlElement.GetString()!);
+                }
+
+                return null;
+            }
+
+            if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
+            {
+                var error = doc.RootElement.TryGetProperty("error", out var errorProp) ? errorProp.ToString() : "unknown";
+                _logger.LogWarning("[ProcessKTDocument] Image generation operation reported failure: {Error}", error);
+                return null;
+            }
+        }
+
+        _logger.LogWarning("[ProcessKTDocument] Image generation operation timed out.");
+        return null;
+    }
+
+    private static ImagePayload? TryExtractImagePayload(string raw)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            if (!doc.RootElement.TryGetProperty("data", out var dataArray) || dataArray.GetArrayLength() == 0)
+            {
+                return null;
+            }
+            var item = dataArray[0];
+            string? base64 = null;
+            string? url = null;
+            if (item.TryGetProperty("b64_json", out var b64Element))
+            {
+                base64 = b64Element.GetString();
+            }
+            if (item.TryGetProperty("url", out var urlElement))
+            {
+                url = urlElement.GetString();
+            }
+
+            if (string.IsNullOrWhiteSpace(base64) && string.IsNullOrWhiteSpace(url))
+            {
+                return null;
+            }
+
+            return new ImagePayload(base64, url);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private record ImagePayload(string? Base64, string? Url);
 
     private async Task<GenerationResult?> TryGenerateWithAzureOpenAi(string endpoint, string apiKey, string deployment, string documentText)
     {

@@ -38,6 +38,8 @@ All containers are auto-created if missing (private access).
 
 Replace the placeholder values with real keys from Azure Portal.
 
+> ℹ️ **Image deployments:** Set `AzureOpenAI:ImageDeployment` to the name of your Azure OpenAI image model (for example `gpt-image-1` or `dall-e-3`). DALL·E 3 in Azure runs as an asynchronous job; the function now submits the request and polls until the operation finishes. Azure currently supports square or cinematic aspect ratios (for example `1024x1024` or `1792x1024`).
+
 ## Running Locally
 Prerequisites: .NET 8 SDK, Azure Storage Emulator (Azurite) or real storage account.
 

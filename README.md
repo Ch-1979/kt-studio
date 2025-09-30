@@ -261,6 +261,8 @@ az functionapp config appsettings set -g $RG -n $APP --settings \
    Speech:Voice="en-US-JennyNeural"
 ```
 
+> 💡 **Image models:** If you point `AzureOpenAI:ImageDeployment` to an Azure DALL·E 3 deployment, the function submits a long-running job and polls the `operation-location` endpoint until the artwork is ready. Azure currently returns square or cinematic aspect ratios (for example `1024x1024`), so the frontend blends the generated art with the gradient backdrop.
+
 ### Local Test of C# Processing
 ```powershell
 cd csharp-functions

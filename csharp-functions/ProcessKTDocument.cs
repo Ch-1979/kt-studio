@@ -114,15 +114,17 @@ public class ProcessKTDocument
         List<QuizQuestion> quiz;
         string summary;
 
+        var docLabel = Path.GetFileNameWithoutExtension(docName);
+
         if (generated != null && generated.Scenes.Any() && generated.Quiz.Any())
         {
             summary = generated.Summary;
-            scenes = generated.Scenes.Select((scene, idx) => SceneData.FromGeneration(scene, idx)).ToList();
+            scenes = generated.Scenes.Select((scene, idx) => SceneData.FromGeneration(scene, idx, summary, docLabel)).ToList();
             quiz = generated.Quiz.Select((q, idx) => QuizQuestion.FromGeneration(q, idx)).ToList();
         }
         else
         {
-            (summary, scenes, quiz) = BuildFallbackContent(documentText);
+            (summary, scenes, quiz) = BuildFallbackContent(documentText, docLabel);
         }
 
         await PopulateSceneImagesAsync(docName, scenes);
@@ -130,7 +132,7 @@ public class ProcessKTDocument
         return (summary, scenes, quiz);
     }
 
-    private (string Summary, List<SceneData> Scenes, List<QuizQuestion> Quiz) BuildFallbackContent(string documentText)
+    private (string Summary, List<SceneData> Scenes, List<QuizQuestion> Quiz) BuildFallbackContent(string documentText, string docName)
     {
         var paragraphs = documentText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
             .Select(p => p.Trim())
@@ -147,7 +149,7 @@ public class ProcessKTDocument
         var summarySource = paragraphs.First();
         var summary = summarySource.Length > 160 ? summarySource[..160] + "..." : summarySource;
 
-        var scenes = paragraphs.Select((text, idx) => SceneData.FromFallback(text, idx)).ToList();
+        var scenes = paragraphs.Select((text, idx) => SceneData.FromFallback(text, idx, summary, docName)).ToList();
 
         var quiz = new List<QuizQuestion>
         {
@@ -201,7 +203,7 @@ public class ProcessKTDocument
         {
             var scene = scenes[i];
             if (!string.IsNullOrWhiteSpace(scene.ImageUrl)) continue;
-            var prompt = scene.VisualPrompt ?? scene.CreateDefaultVisualPrompt();
+            var prompt = scene.ResolveVisualPrompt();
             if (string.IsNullOrWhiteSpace(prompt)) continue;
 
             try
@@ -503,7 +505,12 @@ public class ProcessKTDocument
                 new
                 {
                     role = "system",
-                    content = "You are an Azure learning consultant. Produce engaging storyboards and quizzes derived from source text."
+                    content = "You are an Azure learning consultant and visualization director. From any training document you must deliver a concise summary, 3-6 storyboard scenes, and 3-6 quiz questions. Each scene must include a `visualPrompt` describing a technical architecture or conceptual diagram that reflects the source material."
+                },
+                new
+                {
+                    role = "user",
+                    content = "Return JSON that matches the provided schema. Keep the summary under 250 characters. Craft each scene so the narration highlights the core concept and the visualPrompt requests a clean labeled diagram, blueprint, or schematic relevant to the training content. Quiz questions must be answerable from the document."
                 },
                 new
                 {
@@ -660,44 +667,70 @@ public class ProcessKTDocument
         public string? ImageUrl { get; set; }
         public string? ImageAlt { get; set; }
 
-        public static SceneData FromGeneration(AoaiScene scene, int idx)
+        public string SummaryContext { get; set; } = string.Empty;
+        public string? DocumentLabel { get; set; }
+
+        public static SceneData FromGeneration(AoaiScene scene, int idx, string summary, string? docName)
         {
             var narration = string.IsNullOrWhiteSpace(scene.Narration) ? scene.Title ?? string.Empty : scene.Narration;
-            return new SceneData
+            var keywords = (scene.Keywords ?? new List<string>()).Where(k => !string.IsNullOrWhiteSpace(k)).Select(k => k.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Take(6).ToList();
+            var data = new SceneData
             {
                 Index = idx + 1,
                 Title = string.IsNullOrWhiteSpace(scene.Title) ? CreateTitleFromText(narration, idx) : scene.Title.Trim(),
                 Narration = narration?.Trim() ?? string.Empty,
-                Keywords = (scene.Keywords ?? new List<string>()).Where(k => !string.IsNullOrWhiteSpace(k)).Select(k => k.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Take(6).ToList(),
+                Keywords = keywords,
                 Badge = string.IsNullOrWhiteSpace(scene.Badge) ? null : scene.Badge?.Trim(),
-                VisualPrompt = scene.VisualPrompt,
                 ImageUrl = scene.ImageUrl,
-                ImageAlt = scene.ImageAlt
+                ImageAlt = scene.ImageAlt,
+                SummaryContext = summary,
+                DocumentLabel = docName
             };
+
+            data.VisualPrompt = string.IsNullOrWhiteSpace(scene.VisualPrompt)
+                ? ComposeVisualPrompt(docName, summary, data.Title, data.Narration, keywords)
+                : scene.VisualPrompt!.Trim();
+
+            return data;
         }
 
-        public static SceneData FromFallback(string text, int idx)
+        public static SceneData FromFallback(string text, int idx, string summary, string? docName)
         {
+            var title = CreateTitleFromText(text, idx);
+            var keywords = GuessKeywords(text);
             return new SceneData
             {
                 Index = idx + 1,
-                Title = CreateTitleFromText(text, idx),
+                Title = title,
                 Narration = text,
-                Keywords = GuessKeywords(text),
+                Keywords = keywords,
                 Badge = idx switch
                 {
                     0 => "Overview",
                     1 => "Deep Dive",
                     2 => "Benefits",
                     _ => null
-                }
+                },
+                SummaryContext = summary,
+                DocumentLabel = docName,
+                VisualPrompt = ComposeVisualPrompt(docName, summary, title, text, keywords)
             };
         }
 
         public string CreateDefaultVisualPrompt()
         {
-            var primary = Keywords.FirstOrDefault() ?? Title;
-            return $"Isometric professional illustration depicting {primary} concept, modern azure cloud theme, high contrast lighting, no text overlay.";
+            return ResolveVisualPrompt();
+        }
+
+        public string ResolveVisualPrompt()
+        {
+            if (!string.IsNullOrWhiteSpace(VisualPrompt))
+            {
+                return VisualPrompt!;
+            }
+
+            VisualPrompt = ComposeVisualPrompt(DocumentLabel, SummaryContext, Title, Narration, Keywords);
+            return VisualPrompt!;
         }
 
         private static List<string> GuessKeywords(string text)
@@ -709,6 +742,27 @@ public class ProcessKTDocument
                 .Distinct()
                 .Take(5)
                 .ToList();
+        }
+
+        private static string ComposeVisualPrompt(string? docName, string summary, string title, string narration, List<string> keywords)
+        {
+            var focusTerms = keywords.Where(k => !string.IsNullOrWhiteSpace(k)).Take(5).ToList();
+            if (!focusTerms.Any())
+            {
+                focusTerms.AddRange(GuessKeywords(narration).Take(5));
+            }
+
+            var focusText = focusTerms.Any() ? string.Join(", ", focusTerms) : title;
+            var docLabel = string.IsNullOrWhiteSpace(docName) ? "the solution" : docName.Replace('_', ' ').Replace('-', ' ');
+
+            var summarySnippet = summary;
+            if (string.IsNullOrWhiteSpace(summarySnippet))
+            {
+                summarySnippet = narration;
+            }
+            summarySnippet = summarySnippet.Length > 220 ? summarySnippet[..220] + "..." : summarySnippet;
+
+            return $"Create a high-fidelity technical architecture diagram for {docLabel}. Highlight {focusText}. Convey that {summarySnippet}. Use clean vector blueprint style, azure cloud palette, labeled components, data flows with arrows, no people, no handwriting, cinematic lighting.";
         }
     }
 
@@ -766,13 +820,13 @@ public class ProcessKTDocument
                 items = new
                 {
                     type = "object",
-                    required = new[] { "title", "narration" },
+                    required = new[] { "title", "narration", "visualPrompt" },
                     properties = new Dictionary<string, object>
                     {
                         ["title"] = new { type = "string", maxLength = 120 },
                         ["narration"] = new { type = "string", maxLength = 400 },
                         ["keywords"] = new { type = "array", items = new { type = "string" }, maxItems = 6 },
-                        ["visualPrompt"] = new { type = "string" },
+                        ["visualPrompt"] = new { type = "string", minLength = 40, maxLength = 400 },
                         ["badge"] = new { type = "string", maxLength = 40 },
                         ["imageUrl"] = new { type = "string" },
                         ["imageAlt"] = new { type = "string" }

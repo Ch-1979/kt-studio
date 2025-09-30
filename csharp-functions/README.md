@@ -8,9 +8,10 @@ Trigger: Blob upload to container `uploaded-docs` (storage linked by `AzureWebJo
 Pipeline steps:
 1. Read original document text
 2. Call Azure OpenAI to produce: summary, structured storyboard scenes, and quiz questions
-3. Optionally call Azure OpenAI image generation to create a visual for each scene (stored in `storyboard-images`)
-4. Store video JSON (including scene metadata + image URLs) in `generated-videos`
-5. Store quiz JSON in `quiz-data`
+3. Each scene now carries a `visualPrompt` that requests a clean technical architecture or workflow diagram aligned with the source content.
+4. Optionally call Azure OpenAI image generation to create a visual for each scene (stored in `storyboard-images`)
+5. Store video JSON (including scene metadata + image URLs) in `generated-videos`
+6. Store quiz JSON in `quiz-data`
 
 All containers are auto-created if missing (private access).
 

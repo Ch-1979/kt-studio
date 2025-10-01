@@ -597,11 +597,13 @@ public class ProcessKTDocument
         {
             var baseEndpoint = endpoint.EndsWith('/') ? endpoint : endpoint + "/";
             var targetDuration = DetermineVideoDurationSeconds(scenes.Count);
+            _logger.LogInformation("[ProcessKTDocument] VideoGen starting Deployment={Deployment} Scenes={Scenes} TargetDuration={Duration}s PromptChars={PromptChars}", videoDeployment, scenes.Count, targetDuration, prompt.Length);
+            _logger.LogDebug("[ProcessKTDocument] VideoGen prompt preview: {Preview}", prompt.Length > 280 ? prompt[..280] + "..." : prompt);
             var payload = await SubmitVideoGenerationAsync(baseEndpoint, apiKey, videoDeployment, prompt, targetDuration);
 
             if (payload == null || payload.VideoBytes == null || payload.VideoBytes.Length == 0)
             {
-                _logger.LogWarning("[ProcessKTDocument] Video generation returned no payload.");
+                _logger.LogWarning("[ProcessKTDocument] Video generation returned no payload (Deployment={Deployment}).", videoDeployment);
                 return VideoAsset.Failed("Video generation returned no payload.");
             }
 
@@ -642,15 +644,28 @@ public class ProcessKTDocument
             format = "mp4"
         };
 
+        var serialized = JsonSerializer.Serialize(payload);
+        _logger.LogInformation("[ProcessKTDocument] Video submit -> {Uri} Deployment={Deployment} Duration={Duration}s PayloadBytes={Bytes} PromptChars={PromptChars}", requestUri, deployment, payload.duration, serialized.Length, prompt.Length);
+        _logger.LogDebug("[ProcessKTDocument] Video submit payload snippet: {Snippet}", serialized.Length > 220 ? serialized[..220] + "..." : serialized);
+
         using var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
         {
-            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            Content = new StringContent(serialized, Encoding.UTF8, "application/json")
         };
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Add("api-key", apiKey);
 
         using var response = await HttpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
+
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogError("[ProcessKTDocument] Video submit FAILED Status={Status} ({Reason}) BodySnippet={Snippet}", (int)response.StatusCode, response.ReasonPhrase, Truncate(responseBody, 600));
+        }
+        else
+        {
+            _logger.LogInformation("[ProcessKTDocument] Video submit accepted Status={Status} BodyChars={Len}", (int)response.StatusCode, responseBody.Length);
+        }
 
         if (!response.IsSuccessStatusCode)
         {
@@ -690,7 +705,7 @@ public class ProcessKTDocument
 
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogWarning("[ProcessKTDocument] Video operation poll HTTP {Status}: {Body}", response.StatusCode, body);
+                _logger.LogWarning("[ProcessKTDocument] Video poll attempt={Attempt} FAILED Status={Status} BodySnippet={Snippet}", attempt + 1, (int)response.StatusCode, Truncate(body, 400));
                 continue;
             }
 
@@ -702,14 +717,17 @@ public class ProcessKTDocument
             if (string.Equals(status, "running", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(status, "processing", StringComparison.OrdinalIgnoreCase))
             {
+                _logger.LogInformation("[ProcessKTDocument] Video poll attempt={Attempt} status={Status} (continuing)", attempt + 1, status);
                 continue;
             }
 
             if (string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase))
             {
+                _logger.LogInformation("[ProcessKTDocument] Video poll succeeded attempt={Attempt} extracting payload", attempt + 1);
                 var payload = await TryExtractVideoPayloadAsync(doc, prompt);
                 if (payload != null)
                 {
+                    _logger.LogInformation("[ProcessKTDocument] Video payload extracted bytes={Bytes} duration={Duration}s", payload.VideoBytes?.Length, payload.DurationSeconds);
                     return payload;
                 }
 
@@ -719,7 +737,7 @@ public class ProcessKTDocument
 
             if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogWarning("[ProcessKTDocument] Video generation operation failed: {Body}", body);
+                _logger.LogError("[ProcessKTDocument] Video operation FAILED attempt={Attempt} BodySnippet={Snippet}", attempt + 1, Truncate(body, 600));
                 return null;
             }
         }

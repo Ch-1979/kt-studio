@@ -92,7 +92,8 @@ Static Web Apps CLI can proxy the frontend + API locally if desired.
 2. **C# Function App** – Deploy via `dotnet publish`/`func azure functionapp publish`, or wire up the provided GitHub Action (`deploy-csharp-functions.yml`) with a publish profile secret.
 3. **App settings** – Set the OpenAI keys and deployment names on the Function App. Restart after saving.
 4. **Storage** – Ensure the Function App and SWA share the same storage account, or adjust the connection strings accordingly.
-5. **Monitoring** – Use Application Insights or Azure Monitor logs to watch Sora job durations, failures, and blob writes.
+5. **Deployment tokens** – Keep Static Web App deployment tokens in sync with the workflow (`AZURE_STATIC_WEB_APPS_API_TOKEN*` secrets) whenever you regenerate them in Azure.
+6. **Monitoring** – Use Application Insights or Azure Monitor logs to watch Sora job durations, failures, and blob writes.
 
 ## 🔍 Key API endpoints
 | Endpoint | Method | Description |

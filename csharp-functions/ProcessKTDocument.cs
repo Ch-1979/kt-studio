@@ -1013,17 +1013,42 @@ public class ProcessKTDocument
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Add("api-key", apiKey);
 
-        using var response = await HttpClient.SendAsync(request);
-        if (!response.IsSuccessStatusCode)
+        _logger.LogInformation("[ProcessKTDocument] AOAI Chat request -> {Uri} Deployment={Deployment} Scenes={Scenes} Quiz={Quiz} InputChars={Chars}", requestUri, deployment, spec.TargetSceneCount, spec.TargetQuizCount, documentText?.Length ?? 0);
+        try
         {
-            var body = await response.Content.ReadAsStringAsync();
-            _logger.LogWarning("[ProcessKTDocument] Azure OpenAI HTTP {Status}: {Body}", response.StatusCode, body);
+            var stopwatch = Stopwatch.StartNew();
+            using var response = await HttpClient.SendAsync(request);
+            stopwatch.Stop();
+            var status = (int)response.StatusCode;
+            var responseBody = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("[ProcessKTDocument] AOAI Chat FAILED Status={Status} ({Reason}) ElapsedMs={Elapsed} BodySnippet={Snippet}", status, response.ReasonPhrase, stopwatch.ElapsedMilliseconds, Truncate(responseBody, 600));
+                return null;
+            }
+            _logger.LogInformation("[ProcessKTDocument] AOAI Chat OK Status={Status} ElapsedMs={Elapsed} BodyChars={Len}", status, stopwatch.ElapsedMilliseconds, responseBody.Length);
+            var parsed = TryParseAoaiResponse(responseBody);
+            if (parsed == null)
+            {
+                _logger.LogWarning("[ProcessKTDocument] AOAI Chat parse returned null (possibly schema mismatch).");
+            }
+            return parsed;
+        }
+        catch (HttpRequestException hre)
+        {
+            _logger.LogError(hre, "[ProcessKTDocument] AOAI Chat HttpRequestException: {Message}", hre.Message);
             return null;
         }
-
-        var raw = await response.Content.ReadAsStringAsync();
-        var parsed = TryParseAoaiResponse(raw);
-        return parsed;
+        catch (TaskCanceledException tce)
+        {
+            _logger.LogError(tce, "[ProcessKTDocument] AOAI Chat timeout/canceled after sending request.");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ProcessKTDocument] AOAI Chat unexpected exception.");
+            return null;
+        }
     }
 
     private static GenerationResult? TryParseAoaiResponse(string raw)

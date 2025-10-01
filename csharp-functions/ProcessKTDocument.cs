@@ -43,67 +43,73 @@ public class ProcessKTDocument
         {
             var downloadInfo = await blobClient.DownloadContentAsync();
             var content = downloadInfo.Value.Content.ToString();
-
-            var (summary, scenes, quiz, videoAsset) = await GenerateContentAsync(name, content);
-
-            var videoJson = new
-            {
-                sourceDocument = name,
-                summary,
-                sceneCount = scenes.Count,
-                createdUtc = DateTime.UtcNow,
-                scenes = scenes.Select(scene => new
-                {
-                    index = scene.Index,
-                    title = scene.Title,
-                    text = scene.Narration,
-                    keywords = scene.Keywords,
-                    badge = scene.Badge,
-                    imageUrl = scene.ImageUrl,
-                    imageAlt = scene.ImageAlt,
-                    visualPrompt = scene.VisualPrompt
-                }),
-                videoAsset = new
-                {
-                    status = videoAsset.Status,
-                    mp4Url = videoAsset.Mp4Url,
-                    thumbnailUrl = videoAsset.ThumbnailUrl,
-                    durationSeconds = videoAsset.DurationSeconds > 0
-                        ? Math.Round(videoAsset.DurationSeconds, 1)
-                        : (double?)null,
-                    prompt = videoAsset.Prompt,
-                    operationId = videoAsset.RawOperationId,
-                    sourceUrl = videoAsset.SourceUrl,
-                    thumbnailSourceUrl = videoAsset.ThumbnailSourceUrl,
-                    error = videoAsset.Error
-                }
-            };
-
-            var quizJson = new
-            {
-                sourceDocument = name,
-                createdUtc = DateTime.UtcNow,
-                questions = quiz.Select(q => new
-                {
-                    id = q.Id,
-                    text = q.Text,
-                    options = q.Options,
-                    correctIndex = q.CorrectIndex,
-                    explanation = q.Explanation
-                })
-            };
-
-            await UploadJsonAsync("generated-videos", Path.ChangeExtension(name, ".video.json"), videoJson);
-            await UploadJsonAsync("quiz-data", Path.ChangeExtension(name, ".quiz.json"), quizJson);
-
-            swTotal.Stop();
-            _logger.LogInformation("[ProcessKTDocument] Generated video JSON and quiz JSON in {ElapsedMs} ms", swTotal.ElapsedMilliseconds);
+            await ProcessContentAsync(name, content, swTotal);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "[ProcessKTDocument] Error processing blob {Name}", name);
             throw;
         }
+    }
+
+    public async Task ProcessContentAsync(string name, string content, System.Diagnostics.Stopwatch? sw = null)
+    {
+        sw ??= System.Diagnostics.Stopwatch.StartNew();
+        var (summary, scenes, quiz, videoAsset) = await GenerateContentAsync(name, content);
+
+        var videoJson = new
+        {
+            sourceDocument = name,
+            summary,
+            sceneCount = scenes.Count,
+            createdUtc = DateTime.UtcNow,
+            scenes = scenes.Select(scene => new
+            {
+                index = scene.Index,
+                title = scene.Title,
+                text = scene.Narration,
+                keywords = scene.Keywords,
+                badge = scene.Badge,
+                imageUrl = scene.ImageUrl,
+                imageAlt = scene.ImageAlt,
+                visualPrompt = scene.VisualPrompt
+            }),
+            videoGenerationAttempted = videoAsset.Status != "skipped" || !string.IsNullOrWhiteSpace(videoAsset.Error),
+            videoAsset = new
+            {
+                status = videoAsset.Status,
+                mp4Url = videoAsset.Mp4Url,
+                thumbnailUrl = videoAsset.ThumbnailUrl,
+                durationSeconds = videoAsset.DurationSeconds > 0
+                    ? Math.Round(videoAsset.DurationSeconds, 1)
+                    : (double?)null,
+                prompt = videoAsset.Prompt,
+                operationId = videoAsset.RawOperationId,
+                sourceUrl = videoAsset.SourceUrl,
+                thumbnailSourceUrl = videoAsset.ThumbnailSourceUrl,
+                error = videoAsset.Error
+            }
+        };
+
+        var quizJson = new
+        {
+            sourceDocument = name,
+            createdUtc = DateTime.UtcNow,
+            questions = quiz.Select(q => new
+            {
+                id = q.Id,
+                text = q.Text,
+                options = q.Options,
+                correctIndex = q.CorrectIndex,
+                explanation = q.Explanation
+            })
+        };
+
+        await UploadJsonAsync("generated-videos", Path.ChangeExtension(name, ".video.json"), videoJson);
+        await UploadJsonAsync("quiz-data", Path.ChangeExtension(name, ".quiz.json"), quizJson);
+
+        sw.Stop();
+        _logger.LogInformation("[ProcessKTDocument] Generated video & quiz artifacts for {Doc} in {ElapsedMs} ms (Scenes={Scenes} Quiz={Quiz} VideoStatus={VideoStatus})", name, sw.ElapsedMilliseconds, scenes.Count, quiz.Count, videoAsset.Status);
     }
 
     private async Task<(string Summary, List<SceneData> Scenes, List<QuizQuestion> Quiz, VideoAsset Asset)> GenerateContentAsync(string docName, string documentText)

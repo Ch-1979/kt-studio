@@ -19,6 +19,8 @@ namespace KTStudio.Functions;
 
 public class ProcessKTDocument
 {
+    // Build marker (forces function re-registration on deployment). Update value to trigger Azure host reload.
+    private static readonly string BuildMarker = "RebindMarker_2025-10-01T13:45Z"; // bump timestamp for redeploy
     private static readonly HttpClient HttpClient = new();
 
     private readonly BlobServiceClient _blobServiceClient;
@@ -34,7 +36,7 @@ public class ProcessKTDocument
     [Function("ProcessKTDocument")]
     public async Task Run([BlobTrigger("uploaded-docs/{name}", Connection = "AzureWebJobsStorage")] BlobClient blobClient, string name)
     {
-        _logger.LogInformation("[ProcessKTDocument] Triggered for blob Name={Name} Uri={Uri}", name, blobClient.Uri);
+        _logger.LogInformation("[ProcessKTDocument] Triggered for blob Name={Name} Uri={Uri} BuildMarker={BuildMarker}", name, blobClient.Uri, BuildMarker);
         var swTotal = System.Diagnostics.Stopwatch.StartNew();
 
         try

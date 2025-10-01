@@ -102,6 +102,7 @@ Static Web Apps CLI can proxy the frontend + API locally if desired.
 | `/api/video/{docBase}` | GET | Fetches generated storyboard manifest (with `videoAsset`) |
 | `/api/quiz/{docBase}` | GET | Returns quiz questions for the document |
 | `/api/list/docs` | GET | Lists known processed document bases |
+| `/api/process/pending` | GET | Manually invoke the .NET processor to sweep `uploaded-docs` (accepts `force=true`) |
 
 ## 🧪 Quality gates
 - **Build**: `dotnet build` inside `csharp-functions` (requires .NET 8 SDK locally).

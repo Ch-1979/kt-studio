@@ -97,7 +97,7 @@
                 <div class="card video-player-card">
                     <div class="video-player-header">
                         <h3 id="videoTitle">Project: System Architecture</h3>
-                        <span class="video-mode-badge"><i class="fas fa-wand-magic-sparkles"></i> AI Storyboard</span>
+                        <!-- Removed AI Storyboard badge per user request -->
                     </div>
                     <div id="videoContent" class="video-content">
                         <div id="sceneBackdrop" class="scene-backdrop">
@@ -116,26 +116,18 @@
                             </div>
                         </div>
                     </div>
-                    <div class="video-controls">
+                    <div class="video-controls single-video-mode">
                         <div class="progress-container">
                             <input type="range" id="progressBar" value="0" min="0" max="100" class="progress-bar">
                         </div>
                         <div class="control-buttons">
-                            <button id="prevSceneButton" class="control-btn" title="Previous scene">
-                                <i class="fas fa-step-backward"></i>
-                            </button>
                             <button id="playPauseButton" class="control-btn">
                                 <i class="fas fa-play"></i>
-                            </button>
-                            <button id="nextSceneButton" class="control-btn" title="Next scene">
-                                <i class="fas fa-step-forward"></i>
                             </button>
                             <span class="time-display">
                                 <span id="currentTime">0:00</span> / <span id="totalTime">0:00</span>
                             </span>
-                            <div class="scene-counter"><span id="sceneIndex">1</span>/<span id="sceneCount">1</span></div>
                         </div>
-                        <div id="sceneIndicatorRow" class="scene-indicators"></div>
                     </div>
                 </div>
             </div>

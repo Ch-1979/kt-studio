@@ -1,5 +1,6 @@
 // Storyboard playback configuration
-const SCENE_DURATION_SECONDS = 8; // default duration per scene when animating
+// Single video mode: no storyboard scene stepping
+const SCENE_DURATION_SECONDS = 8; // retained for fallback timing only
 
 // Global state management
 let appState = {
@@ -44,11 +45,7 @@ const elements = {
     playPauseButton: document.getElementById('playPauseButton'),
     currentTime: document.getElementById('currentTime'),
     totalTime: document.getElementById('totalTime'),
-    prevSceneButton: document.getElementById('prevSceneButton'),
-    nextSceneButton: document.getElementById('nextSceneButton'),
-    sceneIndex: document.getElementById('sceneIndex'),
-    sceneCount: document.getElementById('sceneCount'),
-    sceneIndicatorRow: document.getElementById('sceneIndicatorRow'),
+    // Removed scene navigation & indicators
     storyboardVideo: document.getElementById('storyboardVideo'),
     videoControls: document.querySelector('.video-controls'),
     
@@ -86,8 +83,7 @@ function initializeEventListeners() {
     elements.watchVideoButton.addEventListener('click', handleWatchVideo);
     elements.playPauseButton.addEventListener('click', handlePlayPause);
     elements.progressBar.addEventListener('input', handleProgressChange);
-    if (elements.prevSceneButton) elements.prevSceneButton.addEventListener('click', () => jumpScene(-1));
-    if (elements.nextSceneButton) elements.nextSceneButton.addEventListener('click', () => jumpScene(1));
+    // Scene navigation removed in single-video mode
     
     // Quiz functionality
     elements.takeQuizButton.addEventListener('click', handleTakeQuiz);
@@ -190,11 +186,7 @@ function handleWatchVideo() {
     updateVideoPlayer();
 
     if (videoAsset?.mp4Url && elements.storyboardVideo) {
-        elements.storyboardVideo.play().catch(() => {
-            /* Autoplay might be blocked; user can press play manually */
-        });
-    } else {
-        pausePlayback();
+        elements.storyboardVideo.play().catch(() => {/* ignore autoplay block */});
     }
 
     setTimeout(() => {
@@ -204,8 +196,6 @@ function handleWatchVideo() {
 }
 
 function handlePlayPause() {
-    if (!videoScenes.length) return;
-
     if (videoAsset?.mp4Url && elements.storyboardVideo) {
         const videoEl = elements.storyboardVideo;
         if (videoEl.ended) {
@@ -218,54 +208,10 @@ function handlePlayPause() {
         }
         return;
     }
-
-    if (!appState.isVideoPlaying && appState.currentProgress >= 100) {
-        updateScene(0, { progressOverride: 0 });
-    }
-
-    if (appState.isVideoPlaying) {
-        pausePlayback();
-    } else {
-        startPlayback();
-    }
+    // If no generated video yet, nothing else to toggle.
 }
 
-function startPlayback() {
-    if (!videoScenes.length) return;
-    if (videoAsset?.mp4Url && elements.storyboardVideo) {
-        elements.storyboardVideo.play().catch(() => {});
-        return;
-    }
-    clearInterval(playbackInterval);
-
-    appState.isVideoPlaying = true;
-    elements.playPauseButton.innerHTML = '<i class="fas fa-pause"></i>';
-
-    const tickMs = 200;
-    const totalSeconds = Math.max(appState.totalDurationSeconds, videoScenes.length * SCENE_DURATION_SECONDS);
-    const progressIncrement = (tickMs / (totalSeconds * 1000)) * 100;
-
-    playbackInterval = setInterval(() => {
-        if (!appState.isVideoPlaying) {
-            clearInterval(playbackInterval);
-            return;
-        }
-
-        appState.currentProgress = Math.min(100, appState.currentProgress + progressIncrement);
-        elements.progressBar.value = Math.round(appState.currentProgress);
-        updateTimeDisplay();
-
-        const sceneFloat = (appState.currentProgress / 100) * videoScenes.length;
-        const nextSceneIndex = Math.min(videoScenes.length - 1, Math.floor(sceneFloat));
-        if (nextSceneIndex !== appState.currentSceneIndex) {
-            updateScene(nextSceneIndex, { suppressProgressSync: true });
-        }
-
-        if (appState.currentProgress >= 100) {
-            pausePlayback({ reachedEnd: true });
-        }
-    }, tickMs);
-}
+function startPlayback() { /* no-op in single video mode without asset */ }
 
 function pausePlayback(options = {}) {
     const { reachedEnd = false } = options;
@@ -307,28 +253,10 @@ function handleProgressChange(event) {
         updateTimeDisplay();
         return;
     }
-    const sceneIndex = Math.min(videoScenes.length - 1, Math.floor((value / 100) * videoScenes.length));
-    pausePlayback();
-    updateScene(sceneIndex, { progressOverride: value });
+    // No scene model fallback UI now
 }
 
-function jumpScene(delta) {
-    if (!videoScenes.length) return;
-    if (videoAsset?.mp4Url && elements.storyboardVideo) {
-        const videoEl = elements.storyboardVideo;
-        const nextIndex = Math.min(videoScenes.length - 1, Math.max(0, appState.currentSceneIndex + delta));
-        const duration = Number(videoEl.duration) || videoAsset.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
-        if (Number.isFinite(duration) && duration > 0) {
-            const fraction = nextIndex / videoScenes.length;
-            videoEl.currentTime = fraction * duration;
-        }
-        updateScene(nextIndex, { suppressProgressSync: true });
-        return;
-    }
-    const nextIndex = Math.min(videoScenes.length - 1, Math.max(0, appState.currentSceneIndex + delta));
-    pausePlayback();
-    updateScene(nextIndex);
-}
+function jumpScene() { /* removed */ }
 
 function updateTimeDisplay() {
     if (videoAsset?.mp4Url && elements.storyboardVideo) {
@@ -349,8 +277,6 @@ function updateVideoPlayer() {
     if (appState.selectedFileName) {
         elements.videoTitle.textContent = `Project: ${toTitleCase(extractDocBase(appState.selectedFileName))}`;
     }
-
-    updateScene(appState.currentSceneIndex ?? 0, { progressOverride: appState.currentProgress });
     if (videoAsset?.mp4Url) {
         syncVideoProgressFromElement();
     } else {
@@ -740,59 +666,7 @@ function buildSceneFromText(text, idx) {
     };
 }
 
-function updateScene(index, options = {}) {
-    if (!videoScenes.length) {
-        elements.sceneBackdrop.style.background = createGradient(0);
-        elements.sceneBadge.textContent = '';
-        elements.sceneBadge.classList.add('hidden');
-        elements.sceneTitle.textContent = 'Awaiting storyboard';
-        elements.sceneText.textContent = 'Upload a document to generate AI-powered scenes.';
-        elements.sceneKeywords.innerHTML = '';
-        elements.sceneIndex.textContent = '0';
-        elements.sceneCount.textContent = '0';
-        return;
-    }
-
-    const { progressOverride = null, suppressProgressSync = false } = options;
-    const safeIndex = Math.min(videoScenes.length - 1, Math.max(0, index));
-    const scene = videoScenes[safeIndex];
-
-    appState.currentSceneIndex = safeIndex;
-        if (scene.imageUrl) {
-            elements.sceneBackdrop.style.backgroundImage = `linear-gradient(160deg, rgba(15,23,42,0.15) 10%, rgba(15,23,42,0.9) 70%), url('${scene.imageUrl}')`;
-            elements.sceneBackdrop.style.backgroundSize = 'cover';
-            elements.sceneBackdrop.style.backgroundPosition = 'center';
-            elements.sceneBackdrop.style.backgroundRepeat = 'no-repeat';
-            elements.sceneBackdrop.classList.add('has-image');
-            if (scene.imageAlt) {
-                elements.sceneBackdrop.setAttribute('aria-label', scene.imageAlt);
-            } else {
-                elements.sceneBackdrop.removeAttribute('aria-label');
-            }
-        } else {
-            elements.sceneBackdrop.style.backgroundImage = '';
-            elements.sceneBackdrop.style.background = scene.gradient;
-            elements.sceneBackdrop.classList.remove('has-image');
-            elements.sceneBackdrop.removeAttribute('aria-label');
-        }
-        const badgeLabel = scene.badge || '';
-        elements.sceneBadge.textContent = badgeLabel;
-        elements.sceneBadge.classList.toggle('hidden', !badgeLabel);
-    elements.sceneTitle.textContent = scene.title;
-    elements.sceneText.textContent = scene.text;
-    renderSceneKeywords(scene.keywords);
-    elements.sceneIndex.textContent = scene.index ?? safeIndex + 1;
-    elements.sceneCount.textContent = videoScenes.length;
-    highlightSceneIndicator(safeIndex);
-
-    if (progressOverride !== null) {
-        appState.currentProgress = progressOverride;
-    } else if (!suppressProgressSync) {
-        appState.currentProgress = (safeIndex / videoScenes.length) * 100;
-    }
-    elements.progressBar.value = Math.round(appState.currentProgress);
-    updateTimeDisplay();
-}
+function updateScene() { /* removed scene update logic in single video mode */ }
 
 function renderSceneKeywords(keywords) {
     elements.sceneKeywords.innerHTML = '';
@@ -806,31 +680,7 @@ function renderSceneKeywords(keywords) {
     });
 }
 
-function renderSceneIndicators() {
-    if (!elements.sceneIndicatorRow) return;
-    elements.sceneIndicatorRow.innerHTML = '';
-    videoScenes.forEach((scene, idx) => {
-        const dot = document.createElement('button');
-        dot.className = 'scene-indicator';
-        dot.type = 'button';
-        dot.title = scene.title;
-        dot.dataset.index = String(idx);
-        dot.addEventListener('click', () => {
-            pausePlayback();
-            updateScene(idx);
-            updateTimeDisplay();
-        });
-        elements.sceneIndicatorRow.appendChild(dot);
-    });
-    highlightSceneIndicator(appState.currentSceneIndex);
-}
-
-function highlightSceneIndicator(index) {
-    if (!elements.sceneIndicatorRow) return;
-    [...elements.sceneIndicatorRow.children].forEach((dot, idx) => {
-        dot.classList.toggle('active', idx === index);
-    });
-}
+// (Scene indicators removed in single video mode)
 
 const gradientPalette = [
     ['#2563eb', '#9333ea'],
@@ -1014,15 +864,7 @@ document.addEventListener('keydown', function(event) {
     }
     
     // Arrow keys for progress control
-    if (event.code === 'ArrowLeft' && appState.isVideoReady) {
-        event.preventDefault();
-        jumpScene(-1);
-    }
-    
-    if (event.code === 'ArrowRight' && appState.isVideoReady) {
-        event.preventDefault();
-        jumpScene(1);
-    }
+    // Removed scene navigation shortcuts in single video mode
 });
 
 // Console helper for development
@@ -1031,4 +873,4 @@ window.runDemo = runDemo;
 
 console.log('KT Studio initialized successfully!');
 console.log('Use runDemo() to test the application flow.');
-console.log('Keyboard shortcuts: Space (play/pause), Left/Right arrows (seek).');
+console.log('Keyboard shortcuts: Space (play/pause).');

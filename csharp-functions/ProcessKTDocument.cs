@@ -42,8 +42,7 @@ public class ProcessKTDocument
             var downloadInfo = await blobClient.DownloadContentAsync();
             var content = downloadInfo.Value.Content.ToString();
 
-            var (summary, scenes, quiz) = await GenerateContentAsync(name, content);
-            var videoAsset = await GenerateVideoAssetAsync(name, summary, scenes);
+            var (summary, scenes, quiz, videoAsset) = await GenerateContentAsync(name, content);
 
             var videoJson = new
             {
@@ -62,18 +61,20 @@ public class ProcessKTDocument
                     imageAlt = scene.ImageAlt,
                     visualPrompt = scene.VisualPrompt
                 }),
-                videoAsset = videoAsset == null
-                    ? null
-                    : new
-                    {
-                        mp4Url = videoAsset.Mp4Url,
-                        thumbnailUrl = videoAsset.ThumbnailUrl,
-                        durationSeconds = Math.Round(videoAsset.DurationSeconds, 1),
-                        prompt = videoAsset.Prompt,
-                        operationId = videoAsset.RawOperationId,
-                        sourceUrl = videoAsset.SourceUrl,
-                        thumbnailSourceUrl = videoAsset.ThumbnailSourceUrl
-                    }
+                videoAsset = new
+                {
+                    status = videoAsset.Status,
+                    mp4Url = videoAsset.Mp4Url,
+                    thumbnailUrl = videoAsset.ThumbnailUrl,
+                    durationSeconds = videoAsset.DurationSeconds > 0
+                        ? Math.Round(videoAsset.DurationSeconds, 1)
+                        : (double?)null,
+                    prompt = videoAsset.Prompt,
+                    operationId = videoAsset.RawOperationId,
+                    sourceUrl = videoAsset.SourceUrl,
+                    thumbnailSourceUrl = videoAsset.ThumbnailSourceUrl,
+                    error = videoAsset.Error
+                }
             };
 
             var quizJson = new
@@ -103,19 +104,20 @@ public class ProcessKTDocument
         }
     }
 
-    private async Task<(string Summary, List<SceneData> Scenes, List<QuizQuestion> Quiz)> GenerateContentAsync(string docName, string documentText)
+    private async Task<(string Summary, List<SceneData> Scenes, List<QuizQuestion> Quiz, VideoAsset Asset)> GenerateContentAsync(string docName, string documentText)
     {
         var endpoint = _config["AzureOpenAI:Endpoint"] ?? _config["AzureOpenAI__Endpoint"];
         var apiKey = _config["AzureOpenAI:ApiKey"] ?? _config["AzureOpenAI__ApiKey"];
         var deployment = _config["AzureOpenAI:Deployment"] ?? _config["AzureOpenAI__Deployment"];
 
         GenerationResult? generated = null;
+        var spec = DetermineGenerationSpec(documentText);
 
         if (!string.IsNullOrWhiteSpace(endpoint) && !string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(deployment))
         {
             try
             {
-                generated = await TryGenerateWithAzureOpenAi(endpoint, apiKey, deployment, documentText);
+                generated = await TryGenerateWithAzureOpenAi(endpoint, apiKey, deployment, documentText, spec);
             }
             catch (Exception ex)
             {
@@ -137,21 +139,23 @@ public class ProcessKTDocument
         }
         else
         {
-            (summary, scenes, quiz) = BuildFallbackContent(documentText, docLabel);
+            (summary, scenes, quiz) = BuildFallbackContent(documentText, docLabel, spec);
         }
 
         await PopulateSceneImagesAsync(docName, scenes);
 
-        return (summary, scenes, quiz);
+        var videoAsset = await GenerateVideoAssetAsync(docName, summary, scenes);
+
+        return (summary, scenes, quiz, videoAsset);
     }
 
-    private (string Summary, List<SceneData> Scenes, List<QuizQuestion> Quiz) BuildFallbackContent(string documentText, string docName)
+    private (string Summary, List<SceneData> Scenes, List<QuizQuestion> Quiz) BuildFallbackContent(string documentText, string docName, GenerationSpec spec)
     {
         var paragraphs = documentText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
             .Select(p => p.Trim())
             .Where(p => p.Length > 25)
             .Distinct()
-            .Take(5)
+            .Take(spec.TargetSceneCount)
             .ToList();
 
         if (paragraphs.Count == 0)
@@ -164,37 +168,99 @@ public class ProcessKTDocument
 
         var scenes = paragraphs.Select((text, idx) => SceneData.FromFallback(text, idx, summary, docName)).ToList();
 
-        var quiz = new List<QuizQuestion>
-        {
-            new("q1", "What is the central topic highlighted in this training asset?", GuessOptions(paragraphs.First()), 0, "Focus on the opening paragraph to recall the theme."),
-            new("q2", "How many major concepts were emphasized?", new List<string>{"One", "Two", "Three or more", "None"}, scenes.Count >= 3 ? 2 : scenes.Count == 2 ? 1 : 0, "Each scene maps to a concept."),
-            new("q3", "Which Azure service powers the AI storyboard generation?", new List<string>{"Azure OpenAI", "Azure FTP", "Azure Queues", "Azure CDN"}, 0, "Azure OpenAI transforms the document into scenes and quizzes.")
-        };
+        var quiz = BuildFallbackQuiz(paragraphs, scenes, spec.TargetQuizCount);
 
         return (summary, scenes, quiz);
+    }
 
-        static List<string> GuessOptions(string text)
+    private GenerationSpec DetermineGenerationSpec(string documentText)
+    {
+        var wordCount = string.IsNullOrWhiteSpace(documentText)
+            ? 0
+            : documentText.Split(new[] { ' ', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries).Length;
+
+        int targetScenes = wordCount switch
         {
-            var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .Where(w => w.Length > 3)
-                .Select(Clean)
-                .Distinct()
-                .Take(3)
-                .ToList();
-            while (words.Count < 4)
-            {
-                words.Add(words.Count switch
-                {
-                    0 => "Overview",
-                    1 => "Details",
-                    2 => "Best Practices",
-                    _ => "Summary"
-                });
-            }
-            return words;
+            <= 350 => 3,
+            <= 650 => 4,
+            <= 950 => 5,
+            _ => 6
+        };
 
-            static string Clean(string token) => new string(token.Where(char.IsLetterOrDigit).ToArray());
+        int targetQuiz = Math.Clamp((int)Math.Round(targetScenes * 1.2, MidpointRounding.AwayFromZero), 3, 6);
+
+        return new GenerationSpec(targetScenes, targetQuiz, wordCount);
+    }
+
+    private List<QuizQuestion> BuildFallbackQuiz(List<string> paragraphs, List<SceneData> scenes, int targetCount)
+    {
+        var questions = new List<QuizQuestion>();
+        var opening = paragraphs.FirstOrDefault() ?? "the uploaded document";
+        var topicOptions = BuildTopicOptions(opening);
+        questions.Add(new QuizQuestion("q1", "What is the central topic highlighted in this training asset?", topicOptions, 0, "Review the first section of the document."));
+
+        int nextIndex = 2;
+        foreach (var scene in scenes.Take(Math.Max(0, targetCount - 2)))
+        {
+            var distractors = scenes.Where(s => !ReferenceEquals(s, scene)).Select(s => Truncate(s.Narration, 90)).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().Take(3).ToList();
+            var options = new List<string> { Truncate(scene.Narration, 90) };
+            options.AddRange(distractors);
+            while (options.Count < 4)
+            {
+                options.Add("Refer to earlier sections of the document.");
+            }
+            questions.Add(new QuizQuestion($"q{nextIndex}", $"Which description best matches the scene \"{scene.Title}\"?", options, 0, "This scene summarises the key idea."));
+            nextIndex++;
+            if (questions.Count >= targetCount - 1)
+            {
+                break;
+            }
         }
+
+        if (questions.Count < targetCount)
+        {
+            var countOptions = new List<string> { "One", "Two", "Three", "More than three" };
+            var correct = scenes.Count switch
+            {
+                <= 1 => 0,
+                2 => 1,
+                3 => 2,
+                _ => 3
+            };
+            questions.Add(new QuizQuestion($"q{nextIndex}", "How many major concepts were emphasized?", countOptions, correct, "Each scene points to a core concept."));
+            nextIndex++;
+        }
+
+        if (questions.Count < targetCount)
+        {
+            var providerOptions = new List<string> { "Azure OpenAI", "Azure Storage", "Azure Event Grid", "Azure Monitor" };
+            questions.Add(new QuizQuestion($"q{nextIndex}", "Which Azure service powers the AI storyboard generation?", providerOptions, 0, "Azure OpenAI transforms documents into multimedia output."));
+        }
+
+        return questions;
+    }
+
+    private static List<string> BuildTopicOptions(string text)
+    {
+        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => w.Length > 3)
+            .Select(Clean)
+            .Distinct()
+            .Take(3)
+            .ToList();
+        while (words.Count < 4)
+        {
+            words.Add(words.Count switch
+            {
+                0 => "Overview",
+                1 => "Architecture",
+                2 => "Operations",
+                _ => "Summary"
+            });
+        }
+        return words;
+
+        static string Clean(string token) => new string(token.Where(char.IsLetterOrDigit).ToArray());
     }
 
     private async Task PopulateSceneImagesAsync(string docName, List<SceneData> scenes)
@@ -495,18 +561,18 @@ public class ProcessKTDocument
 
     private record ImagePayload(string? Base64, string? Url);
 
-    private async Task<VideoAsset?> GenerateVideoAssetAsync(string docName, string summary, List<SceneData> scenes)
+    private async Task<VideoAsset> GenerateVideoAssetAsync(string docName, string summary, List<SceneData> scenes)
     {
         if (scenes == null || scenes.Count == 0)
         {
-            return null;
+            return VideoAsset.Skipped("No scenes were generated, so video creation was skipped.");
         }
 
         var videoDeployment = _config["AzureOpenAI:VideoDeployment"] ?? _config["AzureOpenAI__VideoDeployment"];
         if (string.IsNullOrWhiteSpace(videoDeployment))
         {
             _logger.LogInformation("[ProcessKTDocument] Video generation skipped: AzureOpenAI:VideoDeployment not configured.");
-            return null;
+            return VideoAsset.Skipped("Video deployment not configured.");
         }
 
         var endpoint = _config["AzureOpenAI:Endpoint"] ?? _config["AzureOpenAI__Endpoint"];
@@ -515,14 +581,14 @@ public class ProcessKTDocument
         if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(apiKey))
         {
             _logger.LogWarning("[ProcessKTDocument] Video generation skipped due to missing endpoint or API key.");
-            return null;
+            return VideoAsset.Skipped("Video endpoint or API key missing.");
         }
 
         var docLabel = Path.GetFileNameWithoutExtension(docName);
         var prompt = BuildVideoPrompt(docLabel, summary, scenes);
         if (string.IsNullOrWhiteSpace(prompt))
         {
-            return null;
+            return VideoAsset.Skipped("Unable to compose a video prompt.");
         }
 
         try
@@ -534,13 +600,13 @@ public class ProcessKTDocument
             if (payload == null || payload.VideoBytes == null || payload.VideoBytes.Length == 0)
             {
                 _logger.LogWarning("[ProcessKTDocument] Video generation returned no payload.");
-                return null;
+                return VideoAsset.Failed("Video generation returned no payload.");
             }
 
             var clipUrl = await UploadVideoClipAsync(docName, payload.VideoBytes, payload.ContentType ?? "video/mp4");
             if (string.IsNullOrWhiteSpace(clipUrl))
             {
-                return null;
+                return VideoAsset.Failed("Unable to upload generated video clip to storage.");
             }
 
             string? thumbnailUrl = null;
@@ -554,21 +620,12 @@ public class ProcessKTDocument
                 thumbnailUrl = scenes.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.ImageUrl))?.ImageUrl;
             }
 
-            return new VideoAsset
-            {
-                Mp4Url = clipUrl,
-                ThumbnailUrl = thumbnailUrl,
-                DurationSeconds = payload.DurationSeconds ?? targetDuration,
-                Prompt = prompt,
-                RawOperationId = payload.OperationId,
-                SourceUrl = payload.SourceUrl,
-                ThumbnailSourceUrl = payload.ThumbnailSourceUrl
-            };
+            return VideoAsset.Success(clipUrl, thumbnailUrl, payload.DurationSeconds ?? targetDuration, prompt, payload.OperationId, payload.SourceUrl, payload.ThumbnailSourceUrl);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "[ProcessKTDocument] Azure OpenAI video generation failed for {Doc}", docName);
-            return null;
+            return VideoAsset.Failed(ex.Message);
         }
     }
 
@@ -909,7 +966,7 @@ public class ProcessKTDocument
         return builder.ToString();
     }
 
-    private async Task<GenerationResult?> TryGenerateWithAzureOpenAi(string endpoint, string apiKey, string deployment, string documentText)
+    private async Task<GenerationResult?> TryGenerateWithAzureOpenAi(string endpoint, string apiKey, string deployment, string documentText, GenerationSpec spec)
     {
         var baseUri = endpoint.EndsWith('/') ? endpoint : endpoint + "/";
         var requestUri = new Uri(new Uri(baseUri), $"openai/deployments/{deployment}/chat/completions?api-version=2024-08-01-preview");
@@ -932,12 +989,12 @@ public class ProcessKTDocument
                 new
                 {
                     role = "system",
-                    content = "You are an Azure learning consultant and visualization director. From any training document you must deliver a concise summary, 3-6 storyboard scenes, and 3-6 quiz questions. Each scene must include a `visualPrompt` describing a technical architecture or conceptual diagram that reflects the source material."
+                    content = $"You are an Azure learning consultant and visualization director. From any training document you must deliver a concise summary, exactly {spec.TargetSceneCount} storyboard scenes, and exactly {spec.TargetQuizCount} quiz questions. Each scene must include a `visualPrompt` describing a technical architecture or conceptual diagram that reflects the source material."
                 },
                 new
                 {
                     role = "user",
-                    content = "Return JSON that matches the provided schema. Keep the summary under 250 characters. Craft each scene so the narration highlights the core concept and the visualPrompt requests a clean labeled diagram, blueprint, or schematic relevant to the training content. Quiz questions must be answerable from the document."
+                    content = $"Return JSON that matches the provided schema. Keep the summary under 250 characters. Craft each scene so the narration highlights the core concept and the visualPrompt requests a clean labeled diagram, blueprint, or schematic relevant to the training content. You must output exactly {spec.TargetSceneCount} scenes and {spec.TargetQuizCount} quiz questions, unless the source material is clearly too short to support them (in that case fall back to the maximum coherent number and explain in the summary). Quiz questions must be specific to the document and cover distinct ideas." 
                 },
                 new
                 {
@@ -1085,16 +1142,53 @@ public class ProcessKTDocument
 
     private class VideoAsset
     {
-        public string Mp4Url { get; set; } = string.Empty;
-        public string? ThumbnailUrl { get; set; }
-        public double DurationSeconds { get; set; }
-        public string? Prompt { get; set; }
-        public string? RawOperationId { get; set; }
-        public string? SourceUrl { get; set; }
-        public string? ThumbnailSourceUrl { get; set; }
+        public string Status { get; init; } = "skipped";
+        public string? Mp4Url { get; init; }
+        public string? ThumbnailUrl { get; init; }
+        public double DurationSeconds { get; init; }
+        public string? Prompt { get; init; }
+        public string? RawOperationId { get; init; }
+        public string? SourceUrl { get; init; }
+        public string? ThumbnailSourceUrl { get; init; }
+        public string? Error { get; init; }
+
+        public static VideoAsset Success(string mp4Url, string? thumbnailUrl, double durationSeconds, string prompt, string? operationId, string? sourceUrl, string? thumbnailSourceUrl)
+        {
+            return new VideoAsset
+            {
+                Status = "success",
+                Mp4Url = mp4Url,
+                ThumbnailUrl = thumbnailUrl,
+                DurationSeconds = durationSeconds,
+                Prompt = prompt,
+                RawOperationId = operationId,
+                SourceUrl = sourceUrl,
+                ThumbnailSourceUrl = thumbnailSourceUrl
+            };
+        }
+
+        public static VideoAsset Skipped(string reason)
+        {
+            return new VideoAsset
+            {
+                Status = "skipped",
+                Error = string.IsNullOrWhiteSpace(reason) ? "Video generation skipped." : reason
+            };
+        }
+
+        public static VideoAsset Failed(string reason)
+        {
+            return new VideoAsset
+            {
+                Status = "failed",
+                Error = string.IsNullOrWhiteSpace(reason) ? "Video generation failed." : reason
+            };
+        }
     }
 
     private record VideoGenerationPayload(byte[] VideoBytes, string? ContentType, byte[]? ThumbnailBytes, string? ThumbnailContentType, double? DurationSeconds, string Prompt, string? OperationId, string? SourceUrl, string? ThumbnailSourceUrl);
+
+    private record GenerationSpec(int TargetSceneCount, int TargetQuizCount, int WordCount);
 
     private class SceneData
     {

@@ -492,8 +492,17 @@ function hydrateStoryboardFromJson(videoJson) {
     appState.currentProgress = 0;
     appState.totalDurationSeconds = videoAsset?.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
 
-    renderSceneIndicators();
-    updateScene(0, { progressOverride: 0 });
+    // Single-video mode: no scene indicators; initialize keywords & text using first entry
+    if (videoScenes.length) {
+        const first = videoScenes[0];
+        elements.sceneTitle.textContent = first.title;
+        elements.sceneText.textContent = first.text;
+        renderSceneKeywords(first.keywords || []);
+        elements.sceneBadge.textContent = first.badge || '';
+        elements.sceneBadge.classList.toggle('hidden', !first.badge);
+    }
+    // Reset progress bar visual
+    elements.progressBar.value = 0;
     updateTimeDisplay();
 }
 

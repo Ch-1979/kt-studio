@@ -117,6 +117,7 @@ Static Web Apps CLI can proxy the frontend + API locally if desired.
 | Quiz missing | `*.quiz.json` not written | Inspect OpenAI response, ensure schema fields returned |
 | HTTP 500 on upload | Storage connection string missing or invalid | Confirm `AzureWebJobsStorage` and SAS permissions |
 | Video JSON present but MP4 empty | Sora response lacked asset URLs | The function falls back gracefully; review logs and adjust prompt or deployment |
+| Manual processor returns 502 | Frontend proxy missing Function base URL | Set `CSHARP_FUNCTION_BASE_URL` (and optional code) on the Static Web App configuration |
 
 ## 🧭 Roadmap ideas
 - Natural language prompt editing before Sora submission.

@@ -438,9 +438,11 @@ async function fetchGeneratedVideo(docName) {
     loadedVideoData = null;
     const base = window.location.origin;
     try {
-        const resp = await fetch(`${base}/api/video/${encodeURIComponent(docName)}`, { headers: { 'Accept': 'application/json' } });
+        // Add cache-busting param to avoid stale 304 returning an old stub
+        const resp = await fetch(`${base}/api/video/${encodeURIComponent(docName)}?t=${Date.now()}`, { headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' } });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         loadedVideoData = await resp.json();
+        console.debug('[video-diagnostics] Raw video JSON payload:', loadedVideoData);
     } catch (e) {
         console.warn('Video fetch failed', e);
         showNotification('Video data not found', 'error');
@@ -539,6 +541,7 @@ function normalizeScenes(rawScenes, fallbackSummary) {
 function normalizeVideoAsset(raw) {
     if (!raw || !raw.mp4Url) return null;
     const duration = Number(raw.durationSeconds);
+    console.debug('[video-diagnostics] Normalizing video asset', raw);
     return {
         mp4Url: raw.mp4Url,
         thumbnailUrl: raw.thumbnailUrl || null,
@@ -555,6 +558,7 @@ function configureVideoAsset(asset) {
     if (!videoEl) return;
 
     if (asset && asset.mp4Url) {
+        console.debug('[video-diagnostics] Configuring video element with mp4Url:', asset.mp4Url);
         videoAsset = asset;
         videoEl.src = asset.mp4Url;
         videoEl.classList.add('active');
@@ -583,6 +587,7 @@ function configureVideoAsset(asset) {
         }
         updateTimeDisplay();
     } else {
+        console.debug('[video-diagnostics] No video asset provided; falling back to storyboard mode.');
         if (videoAsset && elements.storyboardVideo) {
             elements.storyboardVideo.pause();
         }
@@ -596,6 +601,15 @@ function configureVideoAsset(asset) {
         }
         appState.totalDurationSeconds = videoScenes.length * SCENE_DURATION_SECONDS;
         updateTimeDisplay();
+        // Attempt to derive a fallback clip path if storage naming is predictable
+        try {
+            const maybeDoc = extractDocBase(appState.selectedFileName || '');
+            if (maybeDoc) {
+                // Heuristic: if container is public we can attempt direct link (will 404 silently if not)
+                const guessed = `${window.location.origin}/generated-video-files/${maybeDoc.toLowerCase()}/clip.mp4`;
+                console.debug('[video-diagnostics] Guessed fallback video URL:', guessed);
+            }
+        } catch (_) { /* ignore */ }
     }
 }
 
@@ -635,6 +649,12 @@ function attachVideoEventListeners() {
             }
         }
         syncVideoProgressFromElement();
+    });
+
+    videoEl.addEventListener('error', (ev) => {
+        const err = videoEl.error;
+        console.error('[video-diagnostics] HTMLMediaElement error', err);
+        showNotification('Video playback error: ' + (err?.message || 'failed to load'), 'error');
     });
 }
 

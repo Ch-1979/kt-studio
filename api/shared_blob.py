@@ -36,6 +36,11 @@ QUIZ_CONTAINER = "quiz-data"
 _IN_MEMORY_STORE: dict[str, str] = {}
 
 
+def storage_mode() -> str:
+	"""Return 'blob' if a real Azure Blob connection is active, else 'memory'."""
+	return "blob" if _get_blob_service() else "memory"
+
+
 def _get_connection_string() -> Optional[str]:
 	"""Return a connection string if any known env var is set.
 
@@ -148,6 +153,7 @@ def generate_stub_video(doc_name: str) -> Dict[str, Any]:
 		"summary": f"High-level overview of {doc_name}",
 		"sceneCount": 2,
 		"createdUtc": _dt.datetime.utcnow().isoformat() + "Z",
+		"storageMode": storage_mode(),
 		"scenes": [
 			{
 				"index": 1,

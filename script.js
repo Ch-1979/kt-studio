@@ -490,6 +490,16 @@ function hydrateStoryboardFromJson(videoJson) {
     const asset = normalizeVideoAsset(videoJson?.videoAsset);
     configureVideoAsset(asset);
 
+    if (videoJson?.videoAsset) {
+        const status = videoJson.videoAsset.status || videoJson.videoAsset.Status;
+        const errorMessage = videoJson.videoAsset.error || videoJson.videoAsset.Error;
+        if (status === 'failed' && errorMessage) {
+            showNotification('Video generation failed: ' + errorMessage, 'error');
+        } else if (status === 'skipped' && errorMessage) {
+            showNotification('Video generation skipped: ' + errorMessage, 'info');
+        }
+    }
+
     appState.currentSceneIndex = 0;
     appState.currentProgress = 0;
     appState.totalDurationSeconds = videoAsset?.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);

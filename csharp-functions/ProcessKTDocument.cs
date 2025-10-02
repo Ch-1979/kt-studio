@@ -607,10 +607,10 @@ public class ProcessKTDocument
             _logger.LogDebug("[ProcessKTDocument] VideoGen prompt preview: {Preview}", prompt.Length > 280 ? prompt[..280] + "..." : prompt);
             var payload = await SubmitVideoGenerationAsync(baseEndpoint, apiKey, videoDeployment, prompt, targetDuration);
 
-            if (payload == null || payload.VideoBytes == null || payload.VideoBytes.Length == 0)
+            if (payload.VideoBytes == null || payload.VideoBytes.Length == 0)
             {
-                _logger.LogWarning("[ProcessKTDocument] Video generation returned no payload (Deployment={Deployment}).", videoDeployment);
-                return VideoAsset.Failed("Video generation returned no payload.");
+                _logger.LogWarning("[ProcessKTDocument] Video generation returned an empty payload (Deployment={Deployment}).", videoDeployment);
+                throw new VideoGenerationException("Video generation returned an empty payload from Azure OpenAI.");
             }
 
             var clipUrl = await UploadVideoClipAsync(docName, payload.VideoBytes, payload.ContentType ?? "video/mp4");
@@ -631,6 +631,11 @@ public class ProcessKTDocument
             }
 
             return VideoAsset.Success(clipUrl, thumbnailUrl, payload.DurationSeconds ?? targetDuration, prompt, payload.OperationId, payload.SourceUrl, payload.ThumbnailSourceUrl);
+        }
+        catch (VideoGenerationException vgex)
+        {
+            _logger.LogWarning("[ProcessKTDocument] Video generation failed for {Doc}: {Message}", docName, vgex.Message);
+            return VideoAsset.Failed(vgex.Message);
         }
         catch (Exception ex)
         {
@@ -667,17 +672,10 @@ public class ProcessKTDocument
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogError("[ProcessKTDocument] Video submit FAILED Status={Status} ({Reason}) BodySnippet={Snippet}", (int)response.StatusCode, response.ReasonPhrase, Truncate(responseBody, 600));
-        }
-        else
-        {
-            _logger.LogInformation("[ProcessKTDocument] Video submit accepted Status={Status} BodyChars={Len}", (int)response.StatusCode, responseBody.Length);
+            throw new VideoGenerationException($"Submit failed HTTP {(int)response.StatusCode}: {Truncate(responseBody, 600)}");
         }
 
-        if (!response.IsSuccessStatusCode)
-        {
-            _logger.LogWarning("[ProcessKTDocument] Video generation submit failed HTTP {Status}: {Body}", response.StatusCode, responseBody);
-            return null;
-        }
+        _logger.LogInformation("[ProcessKTDocument] Video submit accepted Status={Status} BodyChars={Len}", (int)response.StatusCode, responseBody.Length);
 
         var operationLocation = response.Headers.TryGetValues("operation-location", out var values)
             ? values.FirstOrDefault()
@@ -731,28 +729,22 @@ public class ProcessKTDocument
             {
                 _logger.LogInformation("[ProcessKTDocument] Video poll succeeded attempt={Attempt} extracting payload", attempt + 1);
                 var payload = await TryExtractVideoPayloadAsync(doc, prompt);
-                if (payload != null)
-                {
-                    _logger.LogInformation("[ProcessKTDocument] Video payload extracted bytes={Bytes} duration={Duration}s", payload.VideoBytes?.Length, payload.DurationSeconds);
-                    return payload;
-                }
-
-                _logger.LogWarning("[ProcessKTDocument] Video generation succeeded but payload was empty.");
-                return null;
+                _logger.LogInformation("[ProcessKTDocument] Video payload extracted bytes={Bytes} duration={Duration}s", payload.VideoBytes?.Length, payload.DurationSeconds);
+                return payload;
             }
 
             if (string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogError("[ProcessKTDocument] Video operation FAILED attempt={Attempt} BodySnippet={Snippet}", attempt + 1, Truncate(body, 600));
-                return null;
+                throw new VideoGenerationException($"Video generation operation failed after {attempt + 1} polls: {Truncate(body, 600)}");
             }
         }
 
         _logger.LogWarning("[ProcessKTDocument] Video generation operation timed out.");
-        return null;
+        throw new VideoGenerationException("Video generation operation timed out before completion.");
     }
 
-    private async Task<VideoGenerationPayload?> TryExtractVideoPayloadAsync(JsonDocument doc, string prompt)
+    private async Task<VideoGenerationPayload> TryExtractVideoPayloadAsync(JsonDocument doc, string prompt)
     {
         var root = doc.RootElement;
         string? operationId = null;
@@ -871,7 +863,7 @@ public class ProcessKTDocument
             }
         }
 
-        return null;
+        throw new VideoGenerationException("Video generation result did not include a downloadable video asset.");
     }
 
     private async Task<string?> UploadVideoClipAsync(string docName, byte[] bytes, string contentType)
@@ -1234,6 +1226,13 @@ public class ProcessKTDocument
                 Status = "failed",
                 Error = string.IsNullOrWhiteSpace(reason) ? "Video generation failed." : reason
             };
+        }
+    }
+
+    private class VideoGenerationException : Exception
+    {
+        public VideoGenerationException(string message) : base(message)
+        {
         }
     }
 

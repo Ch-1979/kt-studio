@@ -48,6 +48,16 @@ const elements = {
     // Removed scene navigation & indicators
     storyboardVideo: document.getElementById('storyboardVideo'),
     videoControls: document.querySelector('.video-controls'),
+    videoDiagnosticsPanel: document.getElementById('videoDiagnosticsPanel'),
+    videoDiagStatus: document.getElementById('videoDiagStatus'),
+    videoDiagContentType: document.getElementById('videoDiagContentType'),
+    videoDiagBytes: document.getElementById('videoDiagBytes'),
+    videoDiagFourcc: document.getElementById('videoDiagFourcc'),
+    videoDiagMajor: document.getElementById('videoDiagMajor'),
+    videoDiagEvents: document.getElementById('videoDiagEvents'),
+    videoDiagDetails: document.getElementById('videoDiagDetails'),
+    openVideoButton: document.getElementById('openVideoButton'),
+    copyVideoUrlButton: document.getElementById('copyVideoUrlButton'),
     
     // Quiz section
     quizQuestions: document.getElementById('quizQuestions'),
@@ -66,11 +76,14 @@ const processedElements = {
 
 let loadedVideoData = null; // stores currently loaded generated video JSON
 let loadedQuizData = null;  // stores currently loaded generated quiz JSON
+const videoEventLog = [];
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
     initializeEventListeners();
     updateUI();
+    renderVideoEventLog();
+    updateVideoDiagnostics();
 });
 
 // Event Listeners
@@ -88,6 +101,9 @@ function initializeEventListeners() {
     // Quiz functionality
     elements.takeQuizButton.addEventListener('click', handleTakeQuiz);
     elements.submitQuizButton.addEventListener('click', handleSubmitQuiz);
+
+    if (elements.openVideoButton) elements.openVideoButton.addEventListener('click', handleOpenVideo);
+    if (elements.copyVideoUrlButton) elements.copyVideoUrlButton.addEventListener('click', handleCopyVideoUrl);
 
     // Processed docs actions
     if (processedElements.refreshButton) processedElements.refreshButton.addEventListener('click', fetchProcessedDocs);
@@ -193,6 +209,7 @@ function handleWatchVideo() {
         elements.takeQuizButton.style.display = 'block';
         elements.takeQuizButton.classList.add('fade-in');
     }, 600);
+    updateVideoDiagnostics({ reason: 'watchVideo' });
 }
 
 function handlePlayPause() {
@@ -256,6 +273,139 @@ function handleProgressChange(event) {
     // No scene model fallback UI now
 }
 
+function handleOpenVideo() {
+    if (!videoAsset?.mp4Url) {
+        showNotification('No generated video URL yet.', 'error');
+        return;
+    }
+    window.open(videoAsset.mp4Url, '_blank', 'noopener');
+    logVideoEvent('openVideo');
+}
+
+async function handleCopyVideoUrl() {
+    if (!videoAsset?.mp4Url) {
+        showNotification('No generated video URL yet.', 'error');
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(videoAsset.mp4Url);
+        showNotification('Video URL copied to clipboard.', 'success');
+        logVideoEvent('copyVideoUrl');
+    } catch (err) {
+        console.warn('[video-diagnostics] Failed to copy URL', err);
+        showNotification('Unable to copy video URL. Check browser permissions.', 'error');
+    }
+}
+
+function describeReadyState(code) {
+    switch (code) {
+        case 0: return 'HAVE_NOTHING';
+        case 1: return 'HAVE_METADATA';
+        case 2: return 'HAVE_CURRENT_DATA';
+        case 3: return 'HAVE_FUTURE_DATA';
+        case 4: return 'HAVE_ENOUGH_DATA';
+        default: return `STATE_${code}`;
+    }
+}
+
+function describeNetworkState(code) {
+    switch (code) {
+        case 0: return 'NETWORK_EMPTY';
+        case 1: return 'NETWORK_IDLE';
+        case 2: return 'NETWORK_LOADING';
+        case 3: return 'NETWORK_NO_SOURCE';
+        default: return `NETWORK_${code}`;
+    }
+}
+
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0) return 'unknown';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const idx = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+    const value = bytes / Math.pow(1024, idx);
+    return `${value.toFixed(value > 100 ? 0 : 1)} ${units[idx]}`;
+}
+
+function logVideoEvent(type, details = {}) {
+    const videoEl = elements.storyboardVideo;
+    const now = Date.now();
+    if (type === 'timeupdate' || type === 'progress') {
+        const last = videoEventLog[videoEventLog.length - 1];
+        if (last && last.type === 'timeupdate' && now - last.epoch < 750) {
+            return;
+        }
+        if (last && last.type === 'progress' && now - last.epoch < 750) {
+            return;
+        }
+    }
+    const entry = {
+        epoch: now,
+        label: new Date(now).toLocaleTimeString(),
+        type,
+        current: videoEl ? Number(videoEl.currentTime.toFixed(2)) : null,
+        readyState: videoEl ? describeReadyState(videoEl.readyState) : 'n/a',
+        networkState: videoEl ? describeNetworkState(videoEl.networkState) : 'n/a',
+        detail: details.message || details.note || ''
+    };
+    videoEventLog.push(entry);
+    if (videoEventLog.length > 40) {
+        videoEventLog.shift();
+    }
+    renderVideoEventLog();
+}
+
+function renderVideoEventLog() {
+    const list = elements.videoDiagEvents;
+    if (!list) return;
+    list.innerHTML = '';
+    if (!videoEventLog.length) {
+        const li = document.createElement('li');
+        li.textContent = 'Waiting for playback events...';
+        list.appendChild(li);
+        return;
+    }
+    [...videoEventLog]
+        .slice()
+        .reverse()
+        .forEach(evt => {
+            const li = document.createElement('li');
+            const timeText = typeof evt.current === 'number' ? `${evt.current.toFixed(1)}s` : 'n/a';
+            const detail = evt.detail ? ` • ${evt.detail}` : '';
+            li.textContent = `[${evt.label}] ${evt.type} • t=${timeText} • ready=${evt.readyState} • net=${evt.networkState}${detail}`;
+            list.appendChild(li);
+        });
+}
+
+function updateVideoDiagnostics({ reason } = {}) {
+    const panel = elements.videoDiagnosticsPanel;
+    if (!panel) return;
+    const videoEl = elements.storyboardVideo;
+
+    if (videoAsset?.mp4Url) {
+        panel.classList.add('active');
+        const ready = videoEl ? describeReadyState(videoEl.readyState) : 'n/a';
+        const network = videoEl ? describeNetworkState(videoEl.networkState) : 'n/a';
+        elements.videoDiagStatus.textContent = `Ready (${ready} | ${network})`;
+        elements.videoDiagContentType.textContent = videoAsset.contentType || 'unknown';
+        elements.videoDiagBytes.textContent = videoAsset.byteLength ? formatBytes(videoAsset.byteLength) : 'unknown';
+        elements.videoDiagFourcc.textContent = videoAsset.containerFourCc || '—';
+        elements.videoDiagMajor.textContent = videoAsset.majorBrand || '—';
+    } else {
+        panel.classList.remove('active');
+        elements.videoDiagStatus.textContent = 'No video asset loaded';
+        elements.videoDiagContentType.textContent = '—';
+        elements.videoDiagBytes.textContent = '—';
+        elements.videoDiagFourcc.textContent = '—';
+        elements.videoDiagMajor.textContent = '—';
+        videoEventLog.length = 0;
+        renderVideoEventLog();
+    }
+
+    if (reason) {
+        logVideoEvent(reason);
+    }
+}
+
 function jumpScene() { /* removed */ }
 
 function updateTimeDisplay() {
@@ -283,6 +433,7 @@ function updateVideoPlayer() {
         elements.progressBar.value = Math.round(appState.currentProgress);
         updateTimeDisplay();
     }
+    updateVideoDiagnostics();
 }
 
 // Quiz functionality
@@ -478,6 +629,7 @@ function applyLoadedVideo(docName, videoJson) {
     if (loadedQuizData && loadedQuizData.questions) {
         elements.takeQuizButton.style.display = 'block';
     }
+    updateVideoDiagnostics({ reason: 'manifestLoaded' });
 }
 
 function hydrateStoryboardFromJson(videoJson) {
@@ -559,7 +711,15 @@ function normalizeVideoAsset(raw) {
         prompt: raw.prompt || '',
         operationId: raw.operationId || raw.id || null,
         sourceUrl: raw.sourceUrl || null,
-        thumbnailSourceUrl: raw.thumbnailSourceUrl || null
+        thumbnailSourceUrl: raw.thumbnailSourceUrl || null,
+        contentType: raw.contentType || null,
+        byteLength: (() => {
+            const value = typeof raw.byteLength === 'string' ? Number.parseFloat(raw.byteLength) : raw.byteLength;
+            return Number.isFinite(value) && value > 0 ? value : null;
+        })(),
+        containerFourCc: raw.containerFourCc || raw.header || null,
+        majorBrand: raw.majorBrand || null,
+        hexPrefix: raw.hexPrefix || null
     };
 }
 
@@ -596,6 +756,13 @@ function configureVideoAsset(asset) {
             elements.sceneBackdrop.classList.add('has-video');
         }
         updateTimeDisplay();
+        if (asset.containerFourCc && asset.containerFourCc.toLowerCase() !== 'ftyp') {
+            showNotification(`Video header ${asset.containerFourCc} detected; playback support may vary.`, 'info');
+            console.warn('[video-diagnostics] Unexpected container header', asset.containerFourCc, asset);
+        }
+        videoEventLog.length = 0;
+        renderVideoEventLog();
+        updateVideoDiagnostics({ reason: 'assetConfigured' });
     } else {
         console.debug('[video-diagnostics] No video asset provided; falling back to storyboard mode.');
         if (videoAsset && elements.storyboardVideo) {
@@ -620,6 +787,7 @@ function configureVideoAsset(asset) {
                 console.debug('[video-diagnostics] Guessed fallback video URL:', guessed);
             }
         } catch (_) { /* ignore */ }
+        updateVideoDiagnostics({ reason: 'assetCleared' });
     }
 }
 
@@ -631,12 +799,16 @@ function attachVideoEventListeners() {
     videoEl.addEventListener('play', () => {
         appState.isVideoPlaying = true;
         elements.playPauseButton.innerHTML = '<i class="fas fa-pause"></i>';
+        logVideoEvent('play');
+        updateVideoDiagnostics();
     });
 
     videoEl.addEventListener('pause', () => {
         if (videoEl.ended) return;
         appState.isVideoPlaying = false;
         elements.playPauseButton.innerHTML = '<i class="fas fa-play"></i>';
+        logVideoEvent('pause');
+        updateVideoDiagnostics();
     });
 
     videoEl.addEventListener('ended', () => {
@@ -645,10 +817,13 @@ function attachVideoEventListeners() {
         elements.playPauseButton.innerHTML = '<i class="fas fa-rotate-right"></i>';
         elements.progressBar.value = 100;
         updateTimeDisplay();
+        logVideoEvent('ended');
+        updateVideoDiagnostics();
     });
 
     videoEl.addEventListener('timeupdate', () => {
         syncVideoProgressFromElement();
+        logVideoEvent('timeupdate');
     });
 
     videoEl.addEventListener('loadedmetadata', () => {
@@ -659,12 +834,26 @@ function attachVideoEventListeners() {
             }
         }
         syncVideoProgressFromElement();
+        logVideoEvent('loadedmetadata');
+        updateVideoDiagnostics();
     });
 
     videoEl.addEventListener('error', (ev) => {
         const err = videoEl.error;
         console.error('[video-diagnostics] HTMLMediaElement error', err);
         showNotification('Video playback error: ' + (err?.message || 'failed to load'), 'error');
+        logVideoEvent('error', { message: err?.message });
+        updateVideoDiagnostics();
+    });
+
+    const diagEvents = ['playing', 'canplay', 'canplaythrough', 'waiting', 'stalled', 'suspend', 'progress', 'seeking', 'seeked', 'loadeddata', 'durationchange', 'ratechange', 'abort', 'emptied'];
+    diagEvents.forEach(evt => {
+        videoEl.addEventListener(evt, () => {
+            logVideoEvent(evt);
+            if (evt !== 'progress') {
+                updateVideoDiagnostics();
+            }
+        });
     });
 }
 

@@ -1,0 +1,48 @@
+{
+  "sourceDocument": "20251001191620_Docker KT doc.docx",
+  "summary": "OriginalName=Docker KT doc.docx",
+  "sceneCount": 2,
+  "createdUtc": "2025-10-01T19:46:50.0933435Z",
+  "scenes": [
+    {
+      "index": 1,
+      "title": "Originalnamedocker Kt Docdocx",
+      "text": "OriginalName=Docker KT doc.docx",
+      "keywords": [
+        "originalnamedocker",
+        "docdocx"
+      ],
+      "badge": "Overview",
+      "imageUrl": null,
+      "imageAlt": null,
+      "visualPrompt": "Create a high-fidelity technical architecture diagram for 20251001191620 Docker KT doc. Highlight originalnamedocker, docdocx. Convey that OriginalName=Docker KT doc.docx. Use clean vector blueprint style, azure cloud palette, labeled components, data flows with arrows, no people, no handwriting, cinematic lighting."
+    },
+    {
+      "index": 2,
+      "title": "This Will Be Parsed By The",
+      "text": "(This will be parsed by the C# processor later.)",
+      "keywords": [
+        "this",
+        "will",
+        "parsed",
+        "processor",
+        "later"
+      ],
+      "badge": "Deep Dive",
+      "imageUrl": null,
+      "imageAlt": null,
+      "visualPrompt": "Create a high-fidelity technical architecture diagram for 20251001191620 Docker KT doc. Highlight this, will, parsed, processor, later. Convey that OriginalName=Docker KT doc.docx. Use clean vector blueprint style, azure cloud palette, labeled components, data flows with arrows, no people, no handwriting, cinematic lighting."
+    }
+  ],
+  "videoAsset": {
+    "status": "failed",
+    "mp4Url": null,
+    "thumbnailUrl": null,
+    "durationSeconds": null,
+    "prompt": null,
+    "operationId": null,
+    "sourceUrl": null,
+    "thumbnailSourceUrl": null,
+    "error": "Video generation returned no payload."
+  }
+}

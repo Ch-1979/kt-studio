@@ -129,6 +129,25 @@
                             </span>
                         </div>
                     </div>
+                    <div id="videoDiagnosticsPanel" class="video-diagnostics" aria-live="polite">
+                        <div class="diag-header">
+                            <span id="videoDiagStatus">No video asset loaded</span>
+                            <div class="diag-actions">
+                                <button id="openVideoButton" class="diag-button" title="Open video in new tab"><i class="fas fa-external-link-alt"></i></button>
+                                <button id="copyVideoUrlButton" class="diag-button" title="Copy video URL"><i class="fas fa-copy"></i></button>
+                            </div>
+                        </div>
+                        <div class="diag-meta">
+                            <span><strong>Content</strong> <span id="videoDiagContentType">—</span></span>
+                            <span><strong>Bytes</strong> <span id="videoDiagBytes">—</span></span>
+                            <span><strong>FourCC</strong> <span id="videoDiagFourcc">—</span></span>
+                            <span><strong>Brand</strong> <span id="videoDiagMajor">—</span></span>
+                        </div>
+                        <details id="videoDiagDetails">
+                            <summary>Playback events</summary>
+                            <ul id="videoDiagEvents"></ul>
+                        </details>
+                    </div>
                 </div>
             </div>
 

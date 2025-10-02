@@ -87,7 +87,12 @@ public class ProcessKTDocument
                 operationId = videoAsset.RawOperationId,
                 sourceUrl = videoAsset.SourceUrl,
                 thumbnailSourceUrl = videoAsset.ThumbnailSourceUrl,
-                error = videoAsset.Error
+                error = videoAsset.Error,
+                contentType = videoAsset.ContentType,
+                byteLength = videoAsset.ByteLength,
+                containerFourCc = videoAsset.ContainerFourCc,
+                majorBrand = videoAsset.MajorBrand,
+                hexPrefix = videoAsset.HexPrefix
             }
         };
 
@@ -613,6 +618,24 @@ public class ProcessKTDocument
                 throw new VideoGenerationException("Video generation returned an empty payload from Azure OpenAI.");
             }
 
+            var inspection = InspectVideoBytes(payload.VideoBytes);
+            _logger.LogInformation(
+                "[ProcessKTDocument] Video payload inspection size={Size} box={Box} majorBrand={Major} contentType={ContentType} sourceUrl={SourceUrl}",
+                inspection.ByteLength,
+                inspection.BoxFourCc ?? "(null)",
+                inspection.MajorBrand ?? "(null)",
+                payload.ContentType ?? "(unknown)",
+                payload.SourceUrl ?? "(inline)"
+            );
+            if (!inspection.IsLikelyMp4)
+            {
+                _logger.LogWarning(
+                    "[ProcessKTDocument] Video payload bytes are not recognised as MP4 (box={Box}, prefix={Prefix}). Playback may fail.",
+                    inspection.BoxFourCc ?? "(null)",
+                    inspection.HexPrefix
+                );
+            }
+
             var clipUrl = await UploadVideoClipAsync(docName, payload.VideoBytes, payload.ContentType ?? "video/mp4");
             if (string.IsNullOrWhiteSpace(clipUrl))
             {
@@ -630,7 +653,20 @@ public class ProcessKTDocument
                 thumbnailUrl = scenes.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.ImageUrl))?.ImageUrl;
             }
 
-            return VideoAsset.Success(clipUrl, thumbnailUrl, payload.DurationSeconds ?? targetDuration, prompt, payload.OperationId, payload.SourceUrl, payload.ThumbnailSourceUrl);
+            return VideoAsset.Success(
+                clipUrl,
+                thumbnailUrl,
+                payload.DurationSeconds ?? targetDuration,
+                prompt,
+                payload.OperationId,
+                payload.SourceUrl,
+                payload.ThumbnailSourceUrl,
+                payload.ContentType,
+                inspection.ByteLength,
+                inspection.BoxFourCc,
+                inspection.MajorBrand,
+                inspection.HexPrefix
+            );
         }
         catch (VideoGenerationException vgex)
         {
@@ -961,6 +997,33 @@ public class ProcessKTDocument
         return Math.Clamp((double)baseSeconds, 45d, 120d);
     }
 
+    private static VideoBinaryInspection InspectVideoBytes(byte[] bytes)
+    {
+        if (bytes == null || bytes.Length == 0)
+        {
+            return new VideoBinaryInspection(false, null, null, string.Empty, 0);
+        }
+
+        string? box = null;
+        if (bytes.Length >= 8)
+        {
+            box = Encoding.ASCII.GetString(bytes.AsSpan(4, Math.Min(4, bytes.Length - 4)));
+        }
+
+        string? majorBrand = null;
+        if (bytes.Length >= 12)
+        {
+            majorBrand = Encoding.ASCII.GetString(bytes.AsSpan(8, Math.Min(4, bytes.Length - 8)));
+        }
+
+        var prefixBytes = bytes.Take(Math.Min(16, bytes.Length)).ToArray();
+        var hexPrefix = BitConverter.ToString(prefixBytes);
+
+        var isMp4 = string.Equals(box, "ftyp", StringComparison.OrdinalIgnoreCase);
+
+        return new VideoBinaryInspection(isMp4, box, majorBrand, hexPrefix, bytes.LongLength);
+    }
+
     private static string BuildVideoPrompt(string? docLabel, string summary, List<SceneData> scenes)
     {
         var builder = new StringBuilder();
@@ -1195,7 +1258,13 @@ public class ProcessKTDocument
         public string? ThumbnailSourceUrl { get; init; }
         public string? Error { get; init; }
 
-        public static VideoAsset Success(string mp4Url, string? thumbnailUrl, double durationSeconds, string prompt, string? operationId, string? sourceUrl, string? thumbnailSourceUrl)
+        public string? ContentType { get; init; }
+        public long? ByteLength { get; init; }
+        public string? ContainerFourCc { get; init; }
+        public string? MajorBrand { get; init; }
+        public string? HexPrefix { get; init; }
+
+        public static VideoAsset Success(string mp4Url, string? thumbnailUrl, double durationSeconds, string prompt, string? operationId, string? sourceUrl, string? thumbnailSourceUrl, string? contentType, long? byteLength, string? containerFourCc, string? majorBrand, string? hexPrefix)
         {
             return new VideoAsset
             {
@@ -1206,7 +1275,12 @@ public class ProcessKTDocument
                 Prompt = prompt,
                 RawOperationId = operationId,
                 SourceUrl = sourceUrl,
-                ThumbnailSourceUrl = thumbnailSourceUrl
+                ThumbnailSourceUrl = thumbnailSourceUrl,
+                ContentType = contentType,
+                ByteLength = byteLength,
+                ContainerFourCc = containerFourCc,
+                MajorBrand = majorBrand,
+                HexPrefix = hexPrefix
             };
         }
 
@@ -1237,6 +1311,8 @@ public class ProcessKTDocument
     }
 
     private record VideoGenerationPayload(byte[] VideoBytes, string? ContentType, byte[]? ThumbnailBytes, string? ThumbnailContentType, double? DurationSeconds, string Prompt, string? OperationId, string? SourceUrl, string? ThumbnailSourceUrl);
+
+    private record VideoBinaryInspection(bool IsLikelyMp4, string? BoxFourCc, string? MajorBrand, string HexPrefix, long ByteLength);
 
     private record GenerationSpec(int TargetSceneCount, int TargetQuizCount, int WordCount);
 

@@ -99,6 +99,36 @@ def _sanitize_filename(name: str) -> str:
 	return name
 
 
+def _strip_timestamp_prefix(segment: str) -> str:
+	segment = segment.strip()
+	if len(segment) > 15 and segment[:14].isdigit() and segment[14] in {"_", "-"}:
+		return segment[15:]
+	return segment
+
+
+def _normalize_doc_token(value: str) -> str:
+	return "".join(ch.lower() for ch in value if ch.isalnum())
+
+
+def _candidate_segments(blob_name: str) -> Iterable[str]:
+	cleaned = blob_name.replace("\\", "/").strip("/")
+	cleaned = _strip_timestamp_prefix(cleaned)
+	if not cleaned:
+		return []
+	parts = cleaned.split("/")
+	segments: list[str] = []
+	for part in parts:
+		segment = _strip_timestamp_prefix(part)
+		if segment.endswith('.video.json'):
+			segment = segment[:-11]
+		elif segment.endswith('.quiz.json'):
+			segment = segment[:-10]
+		elif any(segment.lower().endswith(ext) for ext in ('.mp4', '.mov', '.mkv', '.webm', '.png', '.jpg', '.jpeg', '.webp')):
+			segment = segment.rsplit('.', 1)[0]
+		segments.append(segment)
+	return segments
+
+
 def save_uploaded_text(original_name: str, content: str) -> str:
 	"""Persist uploaded content to blob storage (or fallback in-memory).
 
@@ -271,35 +301,23 @@ def _download_text(container: str, blob_name: str) -> Optional[str]:
 
 
 def _match_processed(doc_base: str, blob_name: str) -> bool:
-	# Accept patterns like TIMESTAMP_original.ext.video.json or direct original.video.json
-	# Strategy: strip any leading 14-digit timestamp + underscore
-	candidate = blob_name
-	if len(candidate) > 15 and candidate[:14].isdigit() and candidate[14] == '_':
-		candidate = candidate[15:]
-	# Remove .video.json / .quiz.json
-	if candidate.endswith('.video.json'):
-		core = candidate[:-11]
-	elif candidate.endswith('.quiz.json'):
-		core = candidate[:-10]
-	else:
-		core = candidate
-	# Remove extension (e.g., .txt, .docx, .pdf) if present
-	if '.' in core:
-		core = core.rsplit('.', 1)[0]
-	return core.lower() == doc_base.lower()
+	doc_token = _normalize_doc_token(doc_base)
+	if not doc_token:
+		return False
+	for segment in _candidate_segments(blob_name):
+		if _normalize_doc_token(segment) == doc_token:
+			return True
+	return False
 
 
 def _extract_doc_base(blob_name: str) -> str:
-	candidate = blob_name
-	if len(candidate) > 15 and candidate[:14].isdigit() and candidate[14] == '_':
-		candidate = candidate[15:]
-	if candidate.endswith('.video.json'):
-		candidate = candidate[:-11]
-	elif candidate.endswith('.quiz.json'):
-		candidate = candidate[:-10]
-	if '.' in candidate:
-		candidate = candidate.rsplit('.', 1)[0]
-	return candidate
+	segments = list(_candidate_segments(blob_name))
+	if not segments:
+		return blob_name
+	for segment in segments:
+		if segment and segment.lower() not in {'clip', 'thumbnail'}:
+			return segment
+	return segments[0]
 
 
 def find_processed_artifacts(doc_base: str) -> Dict[str, Optional[str]]:

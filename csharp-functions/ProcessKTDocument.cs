@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Azure.Storage.Sas;
@@ -22,6 +23,70 @@ public class ProcessKTDocument
     // Build marker (forces function re-registration on deployment). Update value to trigger Azure host reload.
     private static readonly string BuildMarker = "RebindMarker_2025-10-01T13:45Z"; // bump timestamp for redeploy
     private static readonly HttpClient HttpClient = new();
+    private static readonly string[] StopWords = new[]
+    {
+        "the","and","that","this","with","from","into","your","their","about","across","through","while","where","when","which","what","have","will","should","could","would","been","being","after","before","under","over","once","each","other","those","these","ever","such","here","there","also","using","within","without","between","across"
+    };
+
+    private static readonly IReadOnlyList<VideoStyleProfile> VideoStyles = new List<VideoStyleProfile>
+    {
+        new("Process Workflow",
+            keywords: new[] {"pipeline","process","workflow","stage","automation","continuous","deployment","delivery","devops","release"},
+            visualStyle: "dynamic process visualization with sequential panels, animated connectors, and bold callouts for each stage",
+            motion: "camera tracks along the pipeline with smooth parallax, emphasizing flow between checkpoints",
+            lighting: "electric teal and indigo lighting with illuminated arrows",
+            avoid: "static blueprint grids; keep energy high and kinetic"),
+        new("Cloud Architecture",
+            keywords: new[] {"architecture","infrastructure","network","topology","server","microservice","component","azure","cloud"},
+            visualStyle: "clean modern infrastructure map with layered cloud services and labeled nodes",
+            motion: "slow orbital moves around clusters with zoom-ins on critical services",
+            lighting: "crisp cool lighting with subtle grid glow",
+            avoid: "generic stock footage or character animation"),
+        new("Security & Compliance",
+            keywords: new[] {"security","risk","compliance","policy","access","governance","identity","threat","zero","trust"},
+            visualStyle: "cybersecurity control room aesthetic with shields, locks, and segmented zones",
+            motion: "tight push-ins on defense layers with particle shield effects",
+            lighting: "deep sapphire and neon accents",
+            avoid: "playful or whimsical motifs"),
+        new("Data & Analytics",
+            keywords: new[] {"data","analytics","insight","metric","dashboard","kpi","report","visualization","telemetry"},
+            visualStyle: "floating analytic dashboards with holographic charts and data streams",
+            motion: "camera weaves between panels with depth-of-field shifts",
+            lighting: "vibrant aqua and magenta gradients",
+            avoid: "flat 2D diagram looks; keep elements volumetric"),
+        new("Team Enablement",
+            keywords: new[] {"team","training","collaboration","onboarding","knowledge","stakeholder","workshop","communication","culture"},
+            visualStyle: "story-driven explainer with stylized avatars, callout bubbles, and shared workspaces",
+            motion: "camera transitions between collaborative scenes and shared canvases",
+            lighting: "warm spotlight with optimistic accents",
+            avoid: "overly technical schematics; highlight human collaboration"),
+        new("Business Strategy",
+            keywords: new[] {"strategy","roadmap","initiative","investment","value","portfolio","market","financial","revenue","goal"},
+            visualStyle: "executive briefing visuals with layered timelines, milestones, and outcome dashboards",
+            motion: "sweeping moves across timelines with highlight pulses on KPIs",
+            lighting: "sleek slate background with gold accents",
+            avoid: "engineering-heavy motifs"),
+        new("Operations",
+            keywords: new[] {"operation","support","maintenance","incident","monitoring","service","sla","uptime","ticket"},
+            visualStyle: "control center dashboards showing runbooks, alerts, and remediation swimlanes",
+            motion: "camera pans across status walls with alert zooms",
+            lighting: "cool neutral palette with alert highlights",
+            avoid: "character animation; keep focus on systems"),
+        new("Intelligent Automation",
+            keywords: new[] {"automation","ai","machine","learning","model","intelligence","predictive","bot","agent"},
+            visualStyle: "futuristic AI orchestration layers with flowing neural arcs and decision nodes",
+            motion: "circular dolly moves through interconnected AI nodes",
+            lighting: "glowing violet and cyan gradients",
+            avoid: "rigid grid visuals"),
+        new("Default Explainer",
+            keywords: Array.Empty<string>(),
+            visualStyle: "cinematic explainer with floating UI layers, subtle parallax, and narrative emphasis",
+            motion: "camera glides between concepts with tasteful depth shifts",
+            lighting: "balanced neutral lighting with accent highlights",
+            avoid: "blueprint grids unless explicitly mentioned")
+    };
+
+    private static readonly HashSet<string> StopWordSet = new(StopWords, StringComparer.OrdinalIgnoreCase);
 
     private readonly BlobServiceClient _blobServiceClient;
     private readonly ILogger<ProcessKTDocument> _logger;
@@ -1028,12 +1093,26 @@ public class ProcessKTDocument
     {
         var builder = new StringBuilder();
         var topic = string.IsNullOrWhiteSpace(docLabel) ? "the solution" : docLabel.Replace('_', ' ').Replace('-', ' ');
-        builder.AppendLine($"Create a 16:9 cinematic training video explaining {topic}. Focus on accurate technical architecture visuals, labeled diagrams, and animated system flows that align with the narration.");
+        var hintTerms = scenes.SelectMany(s => s.Keywords ?? new List<string>())
+            .Concat(scenes.Select(s => s.Title))
+            .Concat(string.IsNullOrWhiteSpace(docLabel) ? Array.Empty<string>() : new[] { docLabel })
+            .ToList();
+        var combinedNarration = string.Join(" ", scenes.Select(s => s.Narration ?? string.Empty));
+        var style = DetermineVideoStyle(hintTerms, summary, combinedNarration, docLabel);
+
+        builder.AppendLine($"Produce a 16:9 cinematic video explaining {topic}. Emphasize a {style.VisualStyle}.");
         if (!string.IsNullOrWhiteSpace(summary))
         {
-            builder.AppendLine("Executive summary: " + summary.Trim());
+            builder.AppendLine("Narrative summary: " + summary.Trim());
         }
-        builder.AppendLine("Storyboard shots (each bullet is a beat to cover):");
+        builder.AppendLine("Camera direction: " + style.Motion + ".");
+        builder.AppendLine("Lighting & palette: " + style.Lighting + ".");
+        if (!string.IsNullOrWhiteSpace(style.Avoid))
+        {
+            builder.AppendLine("Avoid: " + style.Avoid + ".");
+        }
+
+        builder.AppendLine("Storyboard shots (follow this order, each bullet is a scene beat):");
         var index = 1;
         foreach (var scene in scenes.Take(8))
         {
@@ -1042,8 +1121,7 @@ public class ProcessKTDocument
             builder.Append(": ");
             builder.AppendLine(scene.ToShotPrompt());
         }
-        builder.AppendLine("Style: modern cloud blueprint aesthetic, crisp vector shapes, dynamic camera moves, no watermarks, no stock b-roll.");
-        builder.AppendLine("Include overlay annotations for primary services, data paths, and security boundaries.");
+        builder.AppendLine("Ensure transitions reinforce the " + style.StyleName + " theme and keep details accurate to the context.");
         return builder.ToString();
     }
 
@@ -1226,6 +1304,8 @@ public class ProcessKTDocument
         [JsonPropertyName("quiz")] public List<AoaiQuizItem> Quiz { get; init; } = new();
     }
 
+    private record VideoStyleProfile(string StyleName, string[] Keywords, string VisualStyle, string Motion, string Lighting, string Avoid);
+
     private record AoaiScene
     {
         [JsonPropertyName("title")] public string? Title { get; init; }
@@ -1315,6 +1395,84 @@ public class ProcessKTDocument
     private record VideoBinaryInspection(bool IsLikelyMp4, string? BoxFourCc, string? MajorBrand, string HexPrefix, long ByteLength);
 
     private record GenerationSpec(int TargetSceneCount, int TargetQuizCount, int WordCount);
+
+    private static IEnumerable<string> ExtractTokens(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) yield break;
+
+        foreach (var token in Regex.Split(text.ToLowerInvariant(), "[^a-z0-9]+").Where(t => t.Length > 2))
+        {
+            if (StopWordSet.Contains(token))
+            {
+                continue;
+            }
+            yield return token;
+        }
+    }
+
+    private static VideoStyleProfile DetermineVideoStyle(IEnumerable<string>? keywordHints, string summary, string narration, string? docLabel)
+    {
+        var tokens = new List<string>();
+
+        if (keywordHints != null)
+        {
+            foreach (var hint in keywordHints)
+            {
+                if (string.IsNullOrWhiteSpace(hint)) continue;
+                tokens.AddRange(ExtractTokens(hint));
+            }
+        }
+
+        tokens.AddRange(ExtractTokens(summary));
+        tokens.AddRange(ExtractTokens(narration));
+        tokens.AddRange(ExtractTokens(docLabel));
+
+        if (tokens.Count == 0)
+        {
+            return VideoStyles.Last();
+        }
+
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var token in tokens)
+        {
+            if (counts.TryGetValue(token, out var existing))
+            {
+                counts[token] = existing + 1;
+            }
+            else
+            {
+                counts[token] = 1;
+            }
+        }
+
+        VideoStyleProfile best = VideoStyles.Last();
+        var bestScore = 0;
+
+        foreach (var style in VideoStyles)
+        {
+            if (style.Keywords.Length == 0)
+            {
+                continue;
+            }
+
+            var score = 0;
+            foreach (var keyword in style.Keywords)
+            {
+                if (counts.TryGetValue(keyword, out var value))
+                {
+                    score += value;
+                }
+            }
+
+            if (score > bestScore)
+            {
+                best = style;
+                bestScore = score;
+            }
+        }
+
+        return bestScore > 0 ? best : VideoStyles.Last();
+    }
 
     private class SceneData
     {
@@ -1443,7 +1601,17 @@ public class ProcessKTDocument
             }
             summarySnippet = summarySnippet.Length > 220 ? summarySnippet[..220] + "..." : summarySnippet;
 
-            return $"Create a high-fidelity technical architecture diagram for {docLabel}. Highlight {focusText}. Convey that {summarySnippet}. Use clean vector blueprint style, azure cloud palette, labeled components, data flows with arrows, no people, no handwriting, cinematic lighting.";
+            var hintTerms = new List<string>();
+            hintTerms.AddRange(keywords);
+            hintTerms.Add(title);
+            if (!string.IsNullOrWhiteSpace(docName))
+            {
+                hintTerms.Add(docName);
+            }
+
+            var style = DetermineVideoStyle(hintTerms, summarySnippet, narration, docName);
+
+            return $"Create a cinematic scene that embodies {style.StyleName.ToLowerInvariant()} — {style.VisualStyle}. Spotlight {focusText}. Context: {summarySnippet}. Camera movement: {style.Motion}. Lighting: {style.Lighting}. Avoid {style.Avoid}.";
         }
     }
 

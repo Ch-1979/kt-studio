@@ -21,7 +21,7 @@ namespace KTStudio.Functions;
 public class ProcessKTDocument
 {
     // Build marker (forces function re-registration on deployment). Update value to trigger Azure host reload.
-    private static readonly string BuildMarker = "RebindMarker_2025-10-02T07:15Z"; // bump timestamp for redeploy
+    private static readonly string BuildMarker = "RebindMarker_2025-10-02T09:55Z"; // bump timestamp for redeploy
     private static readonly HttpClient HttpClient = new();
     private static readonly string[] StopWords = new[]
     {
@@ -157,7 +157,12 @@ public class ProcessKTDocument
                 byteLength = videoAsset.ByteLength,
                 containerFourCc = videoAsset.ContainerFourCc,
                 majorBrand = videoAsset.MajorBrand,
-                hexPrefix = videoAsset.HexPrefix
+                hexPrefix = videoAsset.HexPrefix,
+                styleName = videoAsset.StyleName,
+                styleVisual = videoAsset.StyleVisual,
+                styleMotion = videoAsset.StyleMotion,
+                styleLighting = videoAsset.StyleLighting,
+                styleAvoid = videoAsset.StyleAvoid
             }
         };
 
@@ -663,11 +668,23 @@ public class ProcessKTDocument
         }
 
         var docLabel = Path.GetFileNameWithoutExtension(docName);
-        var prompt = BuildVideoPrompt(docLabel, summary, scenes);
+        var promptPackage = BuildVideoPromptPackage(docLabel, summary, scenes);
+        foreach (var scene in scenes)
+        {
+            scene.ApplyStyle(promptPackage.Style, docName, summary);
+        }
+        var prompt = promptPackage.Prompt;
         if (string.IsNullOrWhiteSpace(prompt))
         {
             return VideoAsset.Skipped("Unable to compose a video prompt.");
         }
+
+        _logger.LogInformation("[ProcessKTDocument] Video style selected {Style}: visual={VisualStyle}; motion={Motion}; lighting={Lighting}; avoid={Avoid}",
+            promptPackage.Style.StyleName,
+            promptPackage.Style.VisualStyle,
+            promptPackage.Style.Motion,
+            promptPackage.Style.Lighting,
+            promptPackage.Style.Avoid);
 
         try
         {
@@ -730,7 +747,8 @@ public class ProcessKTDocument
                 inspection.ByteLength,
                 inspection.BoxFourCc,
                 inspection.MajorBrand,
-                inspection.HexPrefix
+                inspection.HexPrefix,
+                promptPackage.Style
             );
         }
         catch (VideoGenerationException vgex)
@@ -1089,17 +1107,21 @@ public class ProcessKTDocument
         return new VideoBinaryInspection(isMp4, box, majorBrand, hexPrefix, bytes.LongLength);
     }
 
-    private static string BuildVideoPrompt(string? docLabel, string summary, List<SceneData> scenes)
+    private static VideoPromptPackage BuildVideoPromptPackage(string? docLabel, string summary, List<SceneData> scenes)
     {
-        var builder = new StringBuilder();
         var topic = string.IsNullOrWhiteSpace(docLabel) ? "the solution" : docLabel.Replace('_', ' ').Replace('-', ' ');
-        var hintTerms = scenes.SelectMany(s => s.Keywords ?? new List<string>())
-            .Concat(scenes.Select(s => s.Title))
-            .Concat(string.IsNullOrWhiteSpace(docLabel) ? Array.Empty<string>() : new[] { docLabel })
-            .ToList();
-        var combinedNarration = string.Join(" ", scenes.Select(s => s.Narration ?? string.Empty));
+        var hintTerms = new List<string>();
+        hintTerms.AddRange(scenes.SelectMany(scene => scene.Keywords ?? new List<string>()));
+        hintTerms.AddRange(scenes.Select(scene => scene.Title));
+        if (!string.IsNullOrWhiteSpace(docLabel))
+        {
+            hintTerms.Add(docLabel);
+        }
+
+        var combinedNarration = string.Join(" ", scenes.Select(scene => scene.Narration ?? string.Empty));
         var style = DetermineVideoStyle(hintTerms, summary, combinedNarration, docLabel);
 
+        var builder = new StringBuilder();
         builder.AppendLine($"Produce a 16:9 cinematic video explaining {topic}. Emphasize a {style.VisualStyle}.");
         if (!string.IsNullOrWhiteSpace(summary))
         {
@@ -1122,7 +1144,8 @@ public class ProcessKTDocument
             builder.AppendLine(scene.ToShotPrompt());
         }
         builder.AppendLine("Ensure transitions reinforce the " + style.StyleName + " theme and keep details accurate to the context.");
-        return builder.ToString();
+
+        return new VideoPromptPackage(builder.ToString(), style);
     }
 
     private async Task<GenerationResult?> TryGenerateWithAzureOpenAi(string endpoint, string apiKey, string deployment, string documentText, GenerationSpec spec)
@@ -1306,6 +1329,8 @@ public class ProcessKTDocument
 
     private record VideoStyleProfile(string StyleName, string[] Keywords, string VisualStyle, string Motion, string Lighting, string Avoid);
 
+    private record VideoPromptPackage(string Prompt, VideoStyleProfile Style);
+
     private record AoaiScene
     {
         [JsonPropertyName("title")] public string? Title { get; init; }
@@ -1343,8 +1368,13 @@ public class ProcessKTDocument
         public string? ContainerFourCc { get; init; }
         public string? MajorBrand { get; init; }
         public string? HexPrefix { get; init; }
+        public string? StyleName { get; init; }
+        public string? StyleVisual { get; init; }
+        public string? StyleMotion { get; init; }
+        public string? StyleLighting { get; init; }
+        public string? StyleAvoid { get; init; }
 
-        public static VideoAsset Success(string mp4Url, string? thumbnailUrl, double durationSeconds, string prompt, string? operationId, string? sourceUrl, string? thumbnailSourceUrl, string? contentType, long? byteLength, string? containerFourCc, string? majorBrand, string? hexPrefix)
+        public static VideoAsset Success(string mp4Url, string? thumbnailUrl, double durationSeconds, string prompt, string? operationId, string? sourceUrl, string? thumbnailSourceUrl, string? contentType, long? byteLength, string? containerFourCc, string? majorBrand, string? hexPrefix, VideoStyleProfile style)
         {
             return new VideoAsset
             {
@@ -1360,7 +1390,12 @@ public class ProcessKTDocument
                 ByteLength = byteLength,
                 ContainerFourCc = containerFourCc,
                 MajorBrand = majorBrand,
-                HexPrefix = hexPrefix
+                HexPrefix = hexPrefix,
+                StyleName = style.StyleName,
+                StyleVisual = style.VisualStyle,
+                StyleMotion = style.Motion,
+                StyleLighting = style.Lighting,
+                StyleAvoid = style.Avoid
             };
         }
 
@@ -1549,6 +1584,62 @@ public class ProcessKTDocument
 
             VisualPrompt = ComposeVisualPrompt(DocumentLabel, SummaryContext, Title, Narration, Keywords);
             return VisualPrompt!;
+        }
+
+        public void ApplyStyle(VideoStyleProfile style, string? docLabel, string? summary)
+        {
+            if (style == null)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(docLabel))
+            {
+                DocumentLabel = docLabel;
+            }
+
+            if (!string.IsNullOrWhiteSpace(summary))
+            {
+                SummaryContext = summary;
+            }
+
+            var basePrompt = ResolveVisualPrompt().Trim();
+            var includesStyle = basePrompt.Contains(style.StyleName, StringComparison.OrdinalIgnoreCase)
+                || basePrompt.Contains(style.VisualStyle, StringComparison.OrdinalIgnoreCase);
+
+            if (includesStyle)
+            {
+                VisualPrompt = basePrompt;
+                return;
+            }
+
+            var builder = new StringBuilder();
+            if (!string.IsNullOrWhiteSpace(basePrompt))
+            {
+                builder.Append(basePrompt);
+                if (!basePrompt.EndsWith('.', StringComparison.Ordinal))
+                {
+                    builder.Append('.');
+                }
+                builder.Append(' ');
+            }
+
+            builder.Append("Use a ");
+            builder.Append(style.StyleName);
+            builder.Append(" aesthetic with visuals: ");
+            builder.Append(style.VisualStyle);
+            builder.Append(". Camera: ");
+            builder.Append(style.Motion);
+            builder.Append(". Lighting: ");
+            builder.Append(style.Lighting);
+            if (!string.IsNullOrWhiteSpace(style.Avoid))
+            {
+                builder.Append(". Avoid ");
+                builder.Append(style.Avoid);
+                builder.Append('.');
+            }
+
+            VisualPrompt = builder.ToString();
         }
 
         public string ToShotPrompt()

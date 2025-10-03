@@ -17,6 +17,10 @@ from ..shared_blob import (
 )
 
 DEFAULT_API_VERSION = "2024-08-01-preview"
+FALLBACK_API_VERSIONS = [
+    "2024-02-01",
+    "2023-07-01-preview",
+]
 MAX_CONTEXT_CHARACTERS = 6000
 MAX_SCENES = 8
 ALLOWED_ORIGIN = os.getenv("CHATBOT_ALLOW_ORIGIN", "*")
@@ -183,12 +187,46 @@ def _build_messages(question: str, context_block: str, history: Optional[Iterabl
 def _invoke_chat_completion(
     config: ChatConfig, messages: List[Dict[str, str]]
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    versions_to_try = []
+    if config.api_version:
+        versions_to_try.append(config.api_version)
+    for fallback in FALLBACK_API_VERSIONS:
+        if fallback not in versions_to_try:
+            versions_to_try.append(fallback)
+
+    attempts: List[Dict[str, Any]] = []
+    last_usage: Optional[Dict[str, Any]] = None
+
+    for api_version in versions_to_try:
+        answer, usage, error = _invoke_chat_completion_once(config, messages, api_version)
+        if answer is not None:
+            if api_version != config.api_version:
+                print(f"[chatbot] Azure OpenAI call succeeded using fallback api-version {api_version}")
+            return answer, usage, None
+        attempt_detail: Dict[str, Any] = {
+            "apiVersion": api_version,
+        }
+        if error:
+            attempt_detail.update(error)
+        attempts.append(attempt_detail)
+        if usage:
+            last_usage = usage
+
+    return None, last_usage, {"attempts": attempts}
+
+
+def _invoke_chat_completion_once(
+    config: ChatConfig,
+    messages: List[Dict[str, str]],
+    api_version: str,
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     url = f"{config.endpoint}/openai/deployments/{config.deployment}/chat/completions"
-    params = {"api-version": config.api_version}
+    params = {"api-version": api_version}
     payload = {
         "messages": messages,
         "temperature": 0.2,
         "max_tokens": 600,
+        "model": config.deployment,
     }
     headers = {
         "Content-Type": "application/json",
@@ -200,16 +238,16 @@ def _invoke_chat_completion(
         response = requests.post(url, params=params, headers=headers, json=payload, timeout=30)
         response_text = response.text
         if response.status_code >= 400:
-            snippet = response_text[:800]
-            print(f"[chatbot] Azure OpenAI call failed: {response.status_code} {snippet}")
+            snippet = response_text[:1200]
+            print(f"[chatbot] Azure OpenAI call failed ({api_version}): {response.status_code} {snippet}")
             return None, None, {"status": response.status_code, "response": snippet}
         data = response.json()
     except requests.RequestException as exc:  # pragma: no cover - network errors
-        print(f"[chatbot] Azure OpenAI request exception: {exc}")
+        print(f"[chatbot] Azure OpenAI request exception ({api_version}): {exc}")
         return None, None, {"message": str(exc)}
     except ValueError:
-        snippet = response_text[:800]
-        print("[chatbot] Failed to decode Azure OpenAI response JSON")
+        snippet = response_text[:1200]
+        print(f"[chatbot] Failed to decode Azure OpenAI response JSON ({api_version})")
         return None, None, {"message": "Invalid JSON from Azure OpenAI", "response": snippet}
 
     choices = data.get("choices") if isinstance(data, dict) else None

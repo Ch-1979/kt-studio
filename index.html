@@ -193,6 +193,33 @@
             </div>
         </div>
 
+        <!-- Chatbot Section -->
+        <div class="chatbot-container">
+            <div class="card chatbot-card">
+                <div class="chatbot-header">
+                    <div>
+                        <h3><i class="fas fa-robot"></i> Hello, I'm Q&amp;A bot — ask me anything</h3>
+                        <p class="chatbot-subtitle">Select a processed document and ask a question to get instant answers grounded in the generated storyboard.</p>
+                    </div>
+                    <div class="chatbot-doc-picker">
+                        <label for="chatDocSelect">Document</label>
+                        <select id="chatDocSelect">
+                            <option value="" disabled selected>-- load documents --</option>
+                        </select>
+                        <button id="chatRefreshButton" class="icon-button" title="Refresh documents"><i class="fas fa-rotate"></i></button>
+                    </div>
+                </div>
+                <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
+                <form id="chatForm" class="chat-input-row">
+                    <input type="text" id="chatInput" placeholder="Ask about the selected document..." autocomplete="off" required />
+                    <button type="submit" class="primary-button">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </form>
+                <p id="chatStatus" class="chat-status" role="status"></p>
+            </div>
+        </div>
+
         <!-- Footer -->
         <footer class="footer">
             <p><i class="fas fa-rocket"></i> Learn 3X Faster. Save 80% KT Time.</p>

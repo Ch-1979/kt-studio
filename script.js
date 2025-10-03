@@ -63,7 +63,15 @@ const elements = {
     quizQuestions: document.getElementById('quizQuestions'),
     activeQuiz: document.getElementById('activeQuiz'),
     submitQuizButton: document.getElementById('submitQuizButton'),
-    quizResult: document.getElementById('quizResult')
+    quizResult: document.getElementById('quizResult'),
+
+    // Chatbot
+    chatMessages: document.getElementById('chatMessages'),
+    chatInput: document.getElementById('chatInput'),
+    chatForm: document.getElementById('chatForm'),
+    chatStatus: document.getElementById('chatStatus'),
+    chatDocSelect: document.getElementById('chatDocSelect'),
+    chatRefreshButton: document.getElementById('chatRefreshButton')
 };
 
 // Newly added elements for processed documents
@@ -77,10 +85,16 @@ const processedElements = {
 let loadedVideoData = null; // stores currently loaded generated video JSON
 let loadedQuizData = null;  // stores currently loaded generated quiz JSON
 const videoEventLog = [];
+const chatState = {
+    history: [],
+    selectedDoc: '',
+    isLoading: false
+};
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
     initializeEventListeners();
+    initializeChatbot();
     updateUI();
     renderVideoEventLog();
     updateVideoDiagnostics();
@@ -115,6 +129,11 @@ function initializeEventListeners() {
             handleQuizOptionSelection(e.target.value);
         }
     });
+
+    // Chatbot interactions
+    if (elements.chatForm) elements.chatForm.addEventListener('submit', handleChatSubmit);
+    if (elements.chatRefreshButton) elements.chatRefreshButton.addEventListener('click', handleChatRefresh);
+    if (elements.chatDocSelect) elements.chatDocSelect.addEventListener('change', handleChatDocChange);
 }
 
 // Upload functionality
@@ -542,19 +561,22 @@ async function fetchQuizData() {
 async function fetchProcessedDocs() {
     const base = window.location.origin;
     const url = `${base}/api/list/docs`;
-    processedElements.refreshButton.disabled = true;
+    if (processedElements.refreshButton) processedElements.refreshButton.disabled = true;
+    if (elements.chatRefreshButton) elements.chatRefreshButton.disabled = true;
     try {
         const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         const docs = Array.isArray(data.documents) ? data.documents : [];
         populateProcessedDocsSelect(docs);
+        updateChatDocOptions(docs);
         showNotification(`Loaded ${docs.length} processed docs`, 'success');
     } catch (e) {
         console.warn('Failed to fetch processed docs', e);
         showNotification('Failed to load documents', 'error');
     } finally {
-        processedElements.refreshButton.disabled = false;
+        if (processedElements.refreshButton) processedElements.refreshButton.disabled = false;
+        if (elements.chatRefreshButton) elements.chatRefreshButton.disabled = false;
     }
 }
 
@@ -567,6 +589,160 @@ function populateProcessedDocsSelect(docs) {
     }
     sel.innerHTML = '<option value="" disabled selected>Select document...</option>' +
         docs.map(d => `<option value="${d}">${d}</option>`).join('');
+}
+
+function updateChatDocOptions(docs) {
+    const select = elements.chatDocSelect;
+    if (!select) return;
+
+    const previous = select.value;
+    select.innerHTML = '<option value="" disabled selected>-- select document --</option>' +
+        docs.map(d => `<option value="${d}">${d}</option>`).join('');
+
+    if (previous && docs.includes(previous)) {
+        select.value = previous;
+        chatState.selectedDoc = previous;
+    } else {
+        chatState.selectedDoc = '';
+        renderChatEmptyState();
+    }
+}
+
+// ---------------- Chatbot Experience ---------------- //
+
+function initializeChatbot() {
+    renderChatEmptyState();
+    setChatStatus('Select a processed document to begin.');
+    if (elements.chatInput) elements.chatInput.disabled = true;
+}
+
+function renderChatEmptyState(message) {
+    if (!elements.chatMessages) return;
+    const text = message || 'Choose a document and ask a question to get started.';
+    elements.chatMessages.innerHTML = `<div class="chat-empty-state">${text}</div>`;
+}
+
+function handleChatDocChange() {
+    if (!elements.chatDocSelect) return;
+    const value = elements.chatDocSelect.value;
+    chatState.selectedDoc = value;
+    chatState.history = [];
+    renderChatEmptyState(`Chatting about <strong>${escapeHtml(value)}</strong>. Ask your first question!`);
+    setChatStatus('');
+    if (elements.chatInput) {
+        elements.chatInput.disabled = false;
+        elements.chatInput.focus();
+    }
+}
+
+function handleChatRefresh(event) {
+    if (event) event.preventDefault();
+    fetchProcessedDocs();
+}
+
+function handleChatSubmit(event) {
+    event.preventDefault();
+    if (chatState.isLoading) return;
+    if (!chatState.selectedDoc) {
+        setChatStatus('Please select a document first.');
+        return;
+    }
+    const question = elements.chatInput.value.trim();
+    if (!question) return;
+
+    appendChatMessage('user', question);
+    chatState.history.push({ role: 'user', content: question });
+    elements.chatInput.value = '';
+    sendChatMessage(question);
+}
+
+async function sendChatMessage(question) {
+    const historyPayload = chatState.history.slice(-10);
+    chatState.isLoading = true;
+    setChatStatus('Thinking...');
+    if (elements.chatInput) elements.chatInput.disabled = true;
+    const base = window.location.origin;
+    try {
+        const resp = await fetch(`${base}/api/chatbot/ask`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                docName: chatState.selectedDoc,
+                question,
+                history: historyPayload
+            })
+        });
+
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            const message = data?.error || `HTTP ${resp.status}`;
+            appendChatMessage('bot', `I hit a snag answering that: ${message}`);
+            setChatStatus('');
+            chatState.isLoading = false;
+            if (elements.chatInput) elements.chatInput.disabled = false;
+            return;
+        }
+
+        const answer = data?.answer || 'I was unable to find relevant information in the document.';
+        appendChatMessage('bot', answer, { subtitle: `Source: ${chatState.selectedDoc}` });
+        chatState.history.push({ role: 'assistant', content: answer });
+        setChatStatus('');
+    } catch (err) {
+        appendChatMessage('bot', `I could not reach the Q&A service. ${err.message || err}`);
+        setChatStatus('');
+    } finally {
+        chatState.isLoading = false;
+        if (elements.chatInput) elements.chatInput.disabled = false;
+        if (elements.chatInput) elements.chatInput.focus();
+    }
+}
+
+function appendChatMessage(role, text, options = {}) {
+    if (!elements.chatMessages || !text) return;
+
+    if (elements.chatMessages.querySelector('.chat-empty-state')) {
+        elements.chatMessages.innerHTML = '';
+    }
+
+    const bubble = document.createElement('div');
+    bubble.className = `chat-bubble ${role}`;
+
+    const safeText = escapeHtml(text).replace(/\n/g, '<br>');
+    bubble.innerHTML = safeText;
+
+    if (options.subtitle) {
+        const small = document.createElement('small');
+        small.innerText = options.subtitle;
+        bubble.appendChild(small);
+    }
+
+    elements.chatMessages.appendChild(bubble);
+    scrollChatToBottom();
+}
+
+function setChatStatus(message) {
+    if (!elements.chatStatus) return;
+    elements.chatStatus.textContent = message || '';
+}
+
+function scrollChatToBottom() {
+    if (!elements.chatMessages) return;
+    requestAnimationFrame(() => {
+        elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+    });
+}
+
+function escapeHtml(str) {
+    return str.replace(/[&<>"']/g, function(match) {
+        switch (match) {
+            case '&': return '&amp;';
+            case '<': return '&lt;';
+            case '>': return '&gt;';
+            case '"': return '&quot;';
+            case "'": return '&#39;';
+            default: return match;
+        }
+    });
 }
 
 async function loadSelectedProcessedDoc() {

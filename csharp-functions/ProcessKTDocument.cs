@@ -28,6 +28,15 @@ public class ProcessKTDocument
         "the","and","that","this","with","from","into","your","their","about","across","through","while","where","when","which","what","have","will","should","could","would","been","being","after","before","under","over","once","each","other","those","these","ever","such","here","there","also","using","within","without","between","across"
     };
 
+    private static readonly Regex[] BlockedVisualPromptPatterns = new[]
+    {
+        new Regex("\\bblueprint(s)?\\b", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new Regex("\\bwireframe(s)?\\b", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new Regex("clean\\s+vector\\s+blueprint\\s+style", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new Regex("azure\\s+cloud\\s+palette", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new Regex("technical\\s+blueprint", RegexOptions.IgnoreCase | RegexOptions.Compiled)
+    };
+
     private static readonly IReadOnlyList<VideoStyleProfile> VideoStyles = new List<VideoStyleProfile>
     {
         new("Process Workflow",
@@ -240,6 +249,7 @@ public class ProcessKTDocument
 
         var docLabel = Path.GetFileNameWithoutExtension(docName);
         var scenes = generation.Scenes.Select((scene, idx) => SceneData.FromGeneration(scene, idx, summary, docLabel)).ToList();
+        EnforceVisualPromptPolicy(docLabel, scenes);
         if (!scenes.Any())
         {
             throw new StoryboardGenerationException("Azure OpenAI returned zero scenes.");
@@ -279,6 +289,74 @@ public class ProcessKTDocument
         return new GenerationSpec(targetScenes, targetQuiz, wordCount);
     }
 
+    private void EnforceVisualPromptPolicy(string? docLabel, List<SceneData> scenes)
+    {
+        if (scenes == null || scenes.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var scene in scenes)
+        {
+            var original = scene.VisualPrompt ?? string.Empty;
+            var sanitized = SanitizeVisualPrompt(original, scene, docLabel);
+
+            if (!string.Equals(original, sanitized, StringComparison.Ordinal))
+            {
+                _logger.LogInformation(
+                    "[ProcessKTDocument] Visual prompt adjusted Scene={Scene} Doc={Doc} Before='{Before}' After='{After}'",
+                    scene.Index,
+                    docLabel ?? scene.DocumentLabel ?? "(unknown)",
+                    Truncate(original, 160),
+                    Truncate(sanitized, 160));
+            }
+
+            scene.VisualPrompt = sanitized;
+        }
+    }
+
+    private static string SanitizeVisualPrompt(string prompt, SceneData scene, string? docLabel)
+    {
+        var sanitized = prompt ?? string.Empty;
+
+        foreach (var pattern in BlockedVisualPromptPatterns)
+        {
+            sanitized = pattern.Replace(sanitized, string.Empty);
+        }
+
+    sanitized = Regex.Replace(sanitized, @"\s{2,}", " ").Trim();
+
+        if (string.IsNullOrWhiteSpace(sanitized) || sanitized.Length < 40)
+        {
+            sanitized = BuildDefaultVisualPrompt(scene, docLabel);
+        }
+
+        if (!sanitized.Contains("Avoid blueprint", StringComparison.OrdinalIgnoreCase))
+        {
+            sanitized = sanitized.TrimEnd('.', ';', ',') + ". Avoid blueprint or wireframe aesthetics.";
+        }
+
+        return sanitized;
+    }
+
+    private static string BuildDefaultVisualPrompt(SceneData scene, string? docLabel)
+    {
+        var focusTerms = scene.Keywords?.Where(k => !string.IsNullOrWhiteSpace(k)).Take(5).ToList() ?? new List<string>();
+        if (!string.IsNullOrWhiteSpace(scene.Title))
+        {
+            focusTerms.Insert(0, scene.Title);
+        }
+        if (!string.IsNullOrWhiteSpace(docLabel))
+        {
+            focusTerms.Add(docLabel);
+        }
+
+        var focus = focusTerms.Count > 0
+            ? string.Join(", ", focusTerms.Distinct(StringComparer.OrdinalIgnoreCase))
+            : "the core concept";
+
+        return $"Cinematic motion graphics illustrating {focus}. Emphasize layered depth, luminous gradients, and kinetic energy.";
+    }
     private async Task PopulateSceneImagesAsync(string docName, List<SceneData> scenes)
     {
         if (!scenes.Any()) return;

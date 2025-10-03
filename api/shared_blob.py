@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import json
 import datetime as _dt
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Iterable
 
 try:  # Import optional blob packages; they are present in requirements.txt
@@ -34,6 +35,14 @@ VIDEO_FILE_CONTAINER = "generated-video-files"
 QUIZ_CONTAINER = "quiz-data"
 
 _IN_MEMORY_STORE: dict[str, str] = {}
+REPO_ROOT = Path(__file__).resolve().parents[1]
+_LOCAL_DATA_DIR_HINTS = [
+	REPO_ROOT,
+	REPO_ROOT / "test uploads",
+	REPO_ROOT / "processed",
+	REPO_ROOT / "data",
+	Path(os.getenv("LOCAL_PROCESSED_DATA_DIR", "")).resolve() if os.getenv("LOCAL_PROCESSED_DATA_DIR") else None,
+]
 
 
 def storage_mode() -> str:
@@ -320,6 +329,37 @@ def _extract_doc_base(blob_name: str) -> str:
 	return segments[0]
 
 
+def _iter_local_files(suffix: str) -> Iterable[Path]:
+	seen: set[str] = set()
+	for directory in _LOCAL_DATA_DIR_HINTS:
+		if not directory or not directory.exists():
+			continue
+		for path in directory.glob(f"**/*{suffix}"):
+			if not path.is_file():
+				continue
+			resolved = str(path.resolve())
+			if resolved in seen:
+				continue
+			seen.add(resolved)
+			yield path
+
+
+def _load_local_json(doc_base: str, suffix: str) -> Optional[Dict[str, Any]]:
+	token = _normalize_doc_token(doc_base)
+	if not token:
+		return None
+	for path in _iter_local_files(suffix):
+		candidate = _extract_doc_base(path.name)
+		if _normalize_doc_token(candidate) != token:
+			continue
+		try:
+			text = path.read_text(encoding="utf-8")
+			return json.loads(text)
+		except Exception as ex:
+			print(f"[shared_blob] Local JSON load failed for {path}: {ex}")
+	return None
+
+
 def find_processed_artifacts(doc_base: str) -> Dict[str, Optional[str]]:
 	video_blob = None
 	video_file_blob = None
@@ -344,28 +384,32 @@ def find_processed_artifacts(doc_base: str) -> Dict[str, Optional[str]]:
 
 def load_processed_video(doc_base: str) -> Optional[Dict[str, Any]]:
 	art = find_processed_artifacts(doc_base)
-	if not art.get("video"):
-		return None
-	text = _download_text(VIDEO_CONTAINER, art["video"])
-	if not text:
-		return None
-	try:
-		return json.loads(text)
-	except Exception:
-		return None
+	if art.get("video"):
+		text = _download_text(VIDEO_CONTAINER, art["video"])
+		if text:
+			try:
+				return json.loads(text)
+			except Exception as ex:
+				print(f"[shared_blob] Invalid JSON in blob video artifact for {doc_base}: {ex}")
+	local = _load_local_json(doc_base, ".video.json")
+	if local:
+		return local
+	return None
 
 
 def load_processed_quiz(doc_base: str) -> Optional[Dict[str, Any]]:
 	art = find_processed_artifacts(doc_base)
-	if not art.get("quiz"):
-		return None
-	text = _download_text(QUIZ_CONTAINER, art["quiz"])
-	if not text:
-		return None
-	try:
-		return json.loads(text)
-	except Exception:
-		return None
+	if art.get("quiz"):
+		text = _download_text(QUIZ_CONTAINER, art["quiz"])
+		if text:
+			try:
+				return json.loads(text)
+			except Exception as ex:
+				print(f"[shared_blob] Invalid JSON in blob quiz artifact for {doc_base}: {ex}")
+	local = _load_local_json(doc_base, ".quiz.json")
+	if local:
+		return local
+	return None
 
 
 def list_known_doc_bases() -> List[str]:
@@ -388,5 +432,10 @@ def list_known_doc_bases() -> List[str]:
 	for blob in _list_blobs(QUIZ_CONTAINER):
 		if blob.endswith('.quiz.json'):
 			bases.add(_extract_doc_base(blob))
+
+	for path in _iter_local_files('.video.json'):
+		bases.add(_extract_doc_base(path.name))
+	for path in _iter_local_files('.quiz.json'):
+		bases.add(_extract_doc_base(path.name))
 
 	return sorted(bases)

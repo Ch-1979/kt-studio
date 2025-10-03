@@ -71,7 +71,10 @@ const elements = {
     chatForm: document.getElementById('chatForm'),
     chatStatus: document.getElementById('chatStatus'),
     chatDocSelect: document.getElementById('chatDocSelect'),
-    chatRefreshButton: document.getElementById('chatRefreshButton')
+    chatRefreshButton: document.getElementById('chatRefreshButton'),
+    chatPanel: document.getElementById('chatPanel'),
+    chatToggleButton: document.getElementById('chatToggleButton'),
+    chatCloseButton: document.getElementById('chatCloseButton')
 };
 
 // Newly added elements for processed documents
@@ -134,6 +137,11 @@ function initializeEventListeners() {
     if (elements.chatForm) elements.chatForm.addEventListener('submit', handleChatSubmit);
     if (elements.chatRefreshButton) elements.chatRefreshButton.addEventListener('click', handleChatRefresh);
     if (elements.chatDocSelect) elements.chatDocSelect.addEventListener('change', handleChatDocChange);
+    if (elements.chatToggleButton) elements.chatToggleButton.addEventListener('click', toggleChatPanel);
+    if (elements.chatCloseButton) elements.chatCloseButton.addEventListener('click', event => {
+        if (event) event.preventDefault();
+        closeChatPanel();
+    });
 }
 
 // Upload functionality
@@ -558,7 +566,8 @@ async function fetchQuizData() {
 }
 
 // ---------------- Processed Docs Integration ---------------- //
-async function fetchProcessedDocs() {
+async function fetchProcessedDocs(options = {}) {
+    const { silent = false } = options;
     const base = window.location.origin;
     const url = `${base}/api/list/docs`;
     if (processedElements.refreshButton) processedElements.refreshButton.disabled = true;
@@ -570,10 +579,10 @@ async function fetchProcessedDocs() {
         const docs = Array.isArray(data.documents) ? data.documents : [];
         populateProcessedDocsSelect(docs);
         updateChatDocOptions(docs);
-        showNotification(`Loaded ${docs.length} processed docs`, 'success');
+        if (!silent) showNotification(`Loaded ${docs.length} processed docs`, 'success');
     } catch (e) {
         console.warn('Failed to fetch processed docs', e);
-        showNotification('Failed to load documents', 'error');
+        if (!silent) showNotification('Failed to load documents', 'error');
     } finally {
         if (processedElements.refreshButton) processedElements.refreshButton.disabled = false;
         if (elements.chatRefreshButton) elements.chatRefreshButton.disabled = false;
@@ -614,6 +623,46 @@ function initializeChatbot() {
     renderChatEmptyState();
     setChatStatus('Select a processed document to begin.');
     if (elements.chatInput) elements.chatInput.disabled = true;
+    closeChatPanel({ silent: true });
+    fetchProcessedDocs({ silent: true }).catch(() => {});
+}
+
+function toggleChatPanel() {
+    if (!elements.chatPanel) return;
+    const isOpen = elements.chatPanel.classList.contains('is-open');
+    if (isOpen) {
+        closeChatPanel();
+    } else {
+        openChatPanel();
+    }
+}
+
+function openChatPanel() {
+    if (!elements.chatPanel) return;
+    elements.chatPanel.classList.add('is-open');
+    elements.chatPanel.setAttribute('aria-hidden', 'false');
+    if (elements.chatToggleButton) elements.chatToggleButton.setAttribute('aria-expanded', 'true');
+    if (elements.chatPanel && typeof elements.chatPanel.focus === 'function') {
+        elements.chatPanel.focus();
+    }
+    if (elements.chatInput && !elements.chatInput.disabled) {
+        setTimeout(() => {
+            if (elements.chatInput) elements.chatInput.focus();
+        }, 150);
+    }
+}
+
+function closeChatPanel(options = {}) {
+    const { silent = false } = options;
+    if (!elements.chatPanel) return;
+    elements.chatPanel.classList.remove('is-open');
+    elements.chatPanel.setAttribute('aria-hidden', 'true');
+    if (elements.chatToggleButton) {
+        elements.chatToggleButton.setAttribute('aria-expanded', 'false');
+        if (!silent) {
+            elements.chatToggleButton.focus();
+        }
+    }
 }
 
 function renderChatEmptyState(message) {
@@ -661,6 +710,7 @@ async function sendChatMessage(question) {
     chatState.isLoading = true;
     setChatStatus('Thinking...');
     if (elements.chatInput) elements.chatInput.disabled = true;
+    openChatPanel();
     const base = window.location.origin;
     try {
         const resp = await fetch(`${base}/api/chatbot/ask`, {
@@ -674,6 +724,7 @@ async function sendChatMessage(question) {
         });
 
         const rawBody = await resp.text();
+        const displayBody = rawBody && rawBody.length > 600 ? `${rawBody.slice(0, 600)}…` : rawBody;
         let data = null;
         if (rawBody) {
             try {
@@ -684,7 +735,7 @@ async function sendChatMessage(question) {
         }
 
         if (!resp.ok) {
-            const message = (data && data.error) ? data.error : (rawBody || `HTTP ${resp.status}`);
+            const message = (data && data.error) ? data.error : (displayBody || `HTTP ${resp.status}`);
             const detailSource = data && (data.details || data.trace || data.response);
             const detailText = detailSource ? ` ${formatErrorDetails(detailSource)}` : '';
             appendChatMessage('bot', `I hit a snag answering that: ${message}${detailText}`);
@@ -1292,6 +1343,10 @@ document.addEventListener('keydown', function(event) {
     
     // Arrow keys for progress control
     // Removed scene navigation shortcuts in single video mode
+
+    if (event.key === 'Escape' && elements.chatPanel && elements.chatPanel.classList.contains('is-open')) {
+        closeChatPanel();
+    }
 });
 
 // Console helper for development

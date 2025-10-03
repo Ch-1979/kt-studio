@@ -9,7 +9,12 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import azure.functions as func  # type: ignore
 import requests
 
-from ..shared_blob import load_processed_quiz, load_processed_video
+from ..shared_blob import (
+    load_processed_quiz,
+    load_processed_video,
+    generate_stub_quiz,
+    generate_stub_video,
+)
 
 DEFAULT_API_VERSION = "2024-08-01-preview"
 MAX_CONTEXT_CHARACTERS = 6000
@@ -81,13 +86,19 @@ def handle_request(req: func.HttpRequest) -> func.HttpResponse:  # type: ignore
     try:
         video_json = load_processed_video(doc_name)
         if not video_json:
-            return _cors_response(404, json.dumps({"error": f"No processed video manifest found for {doc_name}"}))
+            print(f"[chatbot] Falling back to stub video manifest for {doc_name}")
+            video_json = generate_stub_video(doc_name)
 
         quiz_json = load_processed_quiz(doc_name)
+        if not quiz_json:
+            quiz_json = generate_stub_quiz(doc_name)
 
         context_block = _build_context(video_json, quiz_json)
         if not context_block:
-            return _cors_response(500, json.dumps({"error": "Unable to build context for chat"}))
+            context_block = (
+                f"Document Summary:\nKey concepts for {doc_name}.\n\n"
+                "Use this limited context to answer if possible; otherwise say you do not know."
+            )
 
         chat_messages = _build_messages(question, context_block, history)
 

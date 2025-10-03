@@ -193,20 +193,37 @@
             </div>
         </div>
 
-        <!-- Chatbot Section -->
-        <div class="chatbot-container">
-            <div class="card chatbot-card">
-                <div class="chatbot-header">
+        <!-- Footer -->
+        <footer class="footer">
+            <p><i class="fas fa-rocket"></i> Learn 3X Faster. Save 80% KT Time.</p>
+        </footer>
+    </div>
+
+    <div class="chat-widget" aria-live="polite">
+        <button type="button" id="chatToggleButton" class="chat-toggle" aria-expanded="false" aria-controls="chatPanel">
+            <i class="fas fa-robot"></i>
+            <span>Hello, I'm Q&amp;A bot</span>
+        </button>
+        <div id="chatPanel" class="chat-panel" role="dialog" aria-modal="false" aria-hidden="true" tabindex="-1">
+            <div class="chat-panel-card chatbot-card">
+                <div class="chat-panel-header">
                     <div>
-                        <h3><i class="fas fa-robot"></i> Hello, I'm Q&amp;A bot — ask me anything</h3>
-                        <p class="chatbot-subtitle">Select a processed document and ask a question to get instant answers grounded in the generated storyboard.</p>
+                        <h3><i class="fas fa-robot"></i> Hello, I'm Q&amp;A bot</h3>
+                        <p>Select a processed document and ask a question to get instant answers grounded in the generated storyboard.</p>
                     </div>
-                    <div class="chatbot-doc-picker">
-                        <label for="chatDocSelect">Document</label>
+                    <div class="chat-panel-actions">
+                        <button type="button" id="chatCloseButton" class="chat-close" aria-label="Close chat">
+                            <i class="fas fa-xmark"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="chat-panel-docpicker">
+                    <label for="chatDocSelect">Document</label>
+                    <div class="chat-panel-docpicker-row">
                         <select id="chatDocSelect">
                             <option value="" disabled selected>-- load documents --</option>
                         </select>
-                        <button id="chatRefreshButton" class="icon-button" title="Refresh documents"><i class="fas fa-rotate"></i></button>
+                        <button type="button" id="chatRefreshButton" class="icon-button" title="Refresh documents"><i class="fas fa-rotate"></i></button>
                     </div>
                 </div>
                 <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
@@ -219,11 +236,6 @@
                 <p id="chatStatus" class="chat-status" role="status"></p>
             </div>
         </div>
-
-        <!-- Footer -->
-        <footer class="footer">
-            <p><i class="fas fa-rocket"></i> Learn 3X Faster. Save 80% KT Time.</p>
-        </footer>
     </div>
 
     <script src="script.js"></script>

@@ -74,7 +74,8 @@ public class ProcessKTDocumentEvent
 
             var download = await blobClient.DownloadContentAsync();
             var text = download.Value.Content.ToString();
-            await _processor.ProcessContentAsync(blobPath, text);
+            var contentType = download.Value.Details?.ContentType;
+            await _processor.ProcessContentAsync(blobPath, text, contentType);
         }
         catch (Exception ex)
         {

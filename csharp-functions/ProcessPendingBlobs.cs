@@ -61,7 +61,8 @@ public class ProcessPendingBlobs
                 var blobClient = container.GetBlobClient(name);
                 var download = await blobClient.DownloadContentAsync();
                 var text = download.Value.Content.ToString();
-                await _processor.ProcessContentAsync(name, text);
+                var contentType = download.Value.Details?.ContentType;
+                await _processor.ProcessContentAsync(name, text, contentType);
                 processed.Add(new { blob = name, processed = true });
                 count++;
             }

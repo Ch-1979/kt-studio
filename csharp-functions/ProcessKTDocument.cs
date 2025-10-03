@@ -91,12 +91,14 @@ public class ProcessKTDocument
     private readonly BlobServiceClient _blobServiceClient;
     private readonly ILogger<ProcessKTDocument> _logger;
     private readonly IConfiguration _config;
+    private readonly DocumentContentExtractor _contentExtractor;
 
     public ProcessKTDocument(BlobServiceClient blobServiceClient, ILogger<ProcessKTDocument> logger, IConfiguration config)
     {
         _blobServiceClient = blobServiceClient;
         _logger = logger;
         _config = config;
+        _contentExtractor = new DocumentContentExtractor();
     }
     [Function("ProcessKTDocument")]
     public async Task Run([BlobTrigger("uploaded-docs/{name}", Connection = "AzureWebJobsStorage")] BlobClient blobClient, string name)
@@ -108,7 +110,8 @@ public class ProcessKTDocument
         {
             var downloadInfo = await blobClient.DownloadContentAsync();
             var content = downloadInfo.Value.Content.ToString();
-            await ProcessContentAsync(name, content, swTotal);
+            var contentType = downloadInfo.Value.Details?.ContentType;
+            await ProcessContentAsync(name, content, contentType, swTotal);
         }
         catch (Exception ex)
         {
@@ -117,10 +120,21 @@ public class ProcessKTDocument
         }
     }
 
-    public async Task ProcessContentAsync(string name, string content, System.Diagnostics.Stopwatch? sw = null)
+    public async Task ProcessContentAsync(string name, string content, string? contentType = null, System.Diagnostics.Stopwatch? sw = null)
     {
         sw ??= System.Diagnostics.Stopwatch.StartNew();
-        var (summary, scenes, quiz, videoAsset) = await GenerateContentAsync(name, content);
+        DocumentExtractionResult extraction;
+        try
+        {
+            extraction = _contentExtractor.Extract(name, content, contentType, _logger);
+        }
+        catch (DocumentExtractionException dex)
+        {
+            _logger.LogError(dex, "[ProcessKTDocument] Document extraction failed for {Doc}", name);
+            throw;
+        }
+
+        var (summary, scenes, quiz, videoAsset) = await GenerateContentAsync(name, extraction);
 
         var videoJson = new
         {
@@ -187,43 +201,60 @@ public class ProcessKTDocument
         _logger.LogInformation("[ProcessKTDocument] Generated video & quiz artifacts for {Doc} in {ElapsedMs} ms (Scenes={Scenes} Quiz={Quiz} VideoStatus={VideoStatus})", name, sw.ElapsedMilliseconds, scenes.Count, quiz.Count, videoAsset.Status);
     }
 
-    private async Task<(string Summary, List<SceneData> Scenes, List<QuizQuestion> Quiz, VideoAsset Asset)> GenerateContentAsync(string docName, string documentText)
+    private async Task<(string Summary, List<SceneData> Scenes, List<QuizQuestion> Quiz, VideoAsset Asset)> GenerateContentAsync(string docName, DocumentExtractionResult extraction)
     {
         var endpoint = _config["AzureOpenAI:Endpoint"] ?? _config["AzureOpenAI__Endpoint"];
         var apiKey = _config["AzureOpenAI:ApiKey"] ?? _config["AzureOpenAI__ApiKey"];
         var deployment = _config["AzureOpenAI:Deployment"] ?? _config["AzureOpenAI__Deployment"];
 
-        GenerationResult? generated = null;
-        var spec = DetermineGenerationSpec(documentText);
-
-        if (!string.IsNullOrWhiteSpace(endpoint) && !string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(deployment))
+        if (string.IsNullOrWhiteSpace(endpoint) || string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(deployment))
         {
-            try
-            {
-                generated = await TryGenerateWithAzureOpenAi(endpoint, apiKey, deployment, documentText, spec);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "[ProcessKTDocument] Azure OpenAI generation failed; using fallback.");
-            }
+            throw new StoryboardGenerationException("Azure OpenAI configuration is missing; cannot generate storyboard.");
         }
 
-        List<SceneData> scenes;
-        List<QuizQuestion> quiz;
-        string summary;
+        var spec = DetermineGenerationSpec(extraction.WordCount);
+        _logger.LogInformation(
+            "[ProcessKTDocument] Storyboard generation starting Document={Doc} WordCount={Words} Segments={Segments} TargetScenes={Scenes} TargetQuiz={Quiz}",
+            docName,
+            extraction.WordCount,
+            extraction.Segments.Count,
+            spec.TargetSceneCount,
+            spec.TargetQuizCount);
+
+        GenerationResult generation;
+        try
+        {
+            generation = await GenerateStoryboardWithAzureOpenAi(endpoint, apiKey, deployment, extraction, spec);
+        }
+        catch (StoryboardGenerationException sgex)
+        {
+            _logger.LogError(sgex, "[ProcessKTDocument] Storyboard generation failed for {Doc}", docName);
+            throw;
+        }
+
+        var summary = generation.Summary;
+        if (string.IsNullOrWhiteSpace(summary))
+        {
+            throw new StoryboardGenerationException("Azure OpenAI returned an empty summary.");
+        }
 
         var docLabel = Path.GetFileNameWithoutExtension(docName);
+        var scenes = generation.Scenes.Select((scene, idx) => SceneData.FromGeneration(scene, idx, summary, docLabel)).ToList();
+        if (!scenes.Any())
+        {
+            throw new StoryboardGenerationException("Azure OpenAI returned zero scenes.");
+        }
 
-        if (generated != null && generated.Scenes.Any() && generated.Quiz.Any())
+        var quiz = generation.Quiz.Select((q, idx) => QuizQuestion.FromGeneration(q, idx)).ToList();
+        if (!quiz.Any())
         {
-            summary = generated.Summary;
-            scenes = generated.Scenes.Select((scene, idx) => SceneData.FromGeneration(scene, idx, summary, docLabel)).ToList();
-            quiz = generated.Quiz.Select((q, idx) => QuizQuestion.FromGeneration(q, idx)).ToList();
+            throw new StoryboardGenerationException("Azure OpenAI returned zero quiz questions.");
         }
-        else
-        {
-            (summary, scenes, quiz) = BuildFallbackContent(documentText, docLabel, spec);
-        }
+
+        _logger.LogInformation(
+            "[ProcessKTDocument] Storyboard generation complete Scenes={Scenes} QuizQuestions={QuizQuestions}",
+            scenes.Count,
+            quiz.Count);
 
         await PopulateSceneImagesAsync(docName, scenes);
 
@@ -232,36 +263,9 @@ public class ProcessKTDocument
         return (summary, scenes, quiz, videoAsset);
     }
 
-    private (string Summary, List<SceneData> Scenes, List<QuizQuestion> Quiz) BuildFallbackContent(string documentText, string docName, GenerationSpec spec)
+    private GenerationSpec DetermineGenerationSpec(int wordCount)
     {
-        var paragraphs = documentText.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(p => p.Trim())
-            .Where(p => p.Length > 25)
-            .Distinct()
-            .Take(spec.TargetSceneCount)
-            .ToList();
-
-        if (paragraphs.Count == 0)
-        {
-            paragraphs.Add("The uploaded document did not contain enough readable text to generate a storyboard. Add richer descriptions to unlock full AI visuals.");
-        }
-
-        var summarySource = paragraphs.First();
-        var summary = summarySource.Length > 160 ? summarySource[..160] + "..." : summarySource;
-
-        var scenes = paragraphs.Select((text, idx) => SceneData.FromFallback(text, idx, summary, docName)).ToList();
-
-        var quiz = BuildFallbackQuiz(paragraphs, scenes, spec.TargetQuizCount);
-
-        return (summary, scenes, quiz);
-    }
-
-    private GenerationSpec DetermineGenerationSpec(string documentText)
-    {
-        var wordCount = string.IsNullOrWhiteSpace(documentText)
-            ? 0
-            : documentText.Split(new[] { ' ', '\n', '\r', '\t' }, StringSplitOptions.RemoveEmptyEntries).Length;
-
+        wordCount = Math.Max(0, wordCount);
         int targetScenes = wordCount switch
         {
             <= 350 => 3,
@@ -273,77 +277,6 @@ public class ProcessKTDocument
         int targetQuiz = Math.Clamp((int)Math.Round(targetScenes * 1.2, MidpointRounding.AwayFromZero), 3, 6);
 
         return new GenerationSpec(targetScenes, targetQuiz, wordCount);
-    }
-
-    private List<QuizQuestion> BuildFallbackQuiz(List<string> paragraphs, List<SceneData> scenes, int targetCount)
-    {
-        var questions = new List<QuizQuestion>();
-        var opening = paragraphs.FirstOrDefault() ?? "the uploaded document";
-        var topicOptions = BuildTopicOptions(opening);
-        questions.Add(new QuizQuestion("q1", "What is the central topic highlighted in this training asset?", topicOptions, 0, "Review the first section of the document."));
-
-        int nextIndex = 2;
-        foreach (var scene in scenes.Take(Math.Max(0, targetCount - 2)))
-        {
-            var distractors = scenes.Where(s => !ReferenceEquals(s, scene)).Select(s => Truncate(s.Narration, 90)).Where(s => !string.IsNullOrWhiteSpace(s)).Distinct().Take(3).ToList();
-            var options = new List<string> { Truncate(scene.Narration, 90) };
-            options.AddRange(distractors);
-            while (options.Count < 4)
-            {
-                options.Add("Refer to earlier sections of the document.");
-            }
-            questions.Add(new QuizQuestion($"q{nextIndex}", $"Which description best matches the scene \"{scene.Title}\"?", options, 0, "This scene summarises the key idea."));
-            nextIndex++;
-            if (questions.Count >= targetCount - 1)
-            {
-                break;
-            }
-        }
-
-        if (questions.Count < targetCount)
-        {
-            var countOptions = new List<string> { "One", "Two", "Three", "More than three" };
-            var correct = scenes.Count switch
-            {
-                <= 1 => 0,
-                2 => 1,
-                3 => 2,
-                _ => 3
-            };
-            questions.Add(new QuizQuestion($"q{nextIndex}", "How many major concepts were emphasized?", countOptions, correct, "Each scene points to a core concept."));
-            nextIndex++;
-        }
-
-        if (questions.Count < targetCount)
-        {
-            var providerOptions = new List<string> { "Azure OpenAI", "Azure Storage", "Azure Event Grid", "Azure Monitor" };
-            questions.Add(new QuizQuestion($"q{nextIndex}", "Which Azure service powers the AI storyboard generation?", providerOptions, 0, "Azure OpenAI transforms documents into multimedia output."));
-        }
-
-        return questions;
-    }
-
-    private static List<string> BuildTopicOptions(string text)
-    {
-        var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-            .Where(w => w.Length > 3)
-            .Select(Clean)
-            .Distinct()
-            .Take(3)
-            .ToList();
-        while (words.Count < 4)
-        {
-            words.Add(words.Count switch
-            {
-                0 => "Overview",
-                1 => "Architecture",
-                2 => "Operations",
-                _ => "Summary"
-            });
-        }
-        return words;
-
-        static string Clean(string token) => new string(token.Where(char.IsLetterOrDigit).ToArray());
     }
 
     private async Task PopulateSceneImagesAsync(string docName, List<SceneData> scenes)
@@ -1148,15 +1081,15 @@ public class ProcessKTDocument
         return new VideoPromptPackage(builder.ToString(), style);
     }
 
-    private async Task<GenerationResult?> TryGenerateWithAzureOpenAi(string endpoint, string apiKey, string deployment, string documentText, GenerationSpec spec)
+    private async Task<GenerationResult> GenerateStoryboardWithAzureOpenAi(string endpoint, string apiKey, string deployment, DocumentExtractionResult extraction, GenerationSpec spec)
     {
         var baseUri = endpoint.EndsWith('/') ? endpoint : endpoint + "/";
         var requestUri = new Uri(new Uri(baseUri), $"openai/deployments/{deployment}/chat/completions?api-version=2024-08-01-preview");
 
         var payload = new
         {
-            temperature = 0.35,
-            max_tokens = 1200,
+            temperature = 0.25,
+            max_tokens = 1600,
             response_format = new
             {
                 type = "json_schema",
@@ -1171,29 +1104,31 @@ public class ProcessKTDocument
                 new
                 {
                     role = "system",
-                    content = $"You are an Azure learning consultant and visualization director. From any training document you must deliver a concise summary, exactly {spec.TargetSceneCount} storyboard scenes, and exactly {spec.TargetQuizCount} quiz questions. Each scene must include a `visualPrompt` describing a technical architecture or conceptual diagram that reflects the source material."
+                    content = $"You are an Azure learning consultant and visualization director. Use the provided enterprise training document to craft a concise summary, exactly {spec.TargetSceneCount} storyboard scenes, and exactly {spec.TargetQuizCount} quiz questions. Each scene must include a \"visualPrompt\" that accurately reflects the document context; if this is impossible you must respond with JSON {{\"error\":\"reason\"}}."
                 },
                 new
                 {
                     role = "user",
-                    content = $"Return JSON that matches the provided schema. Keep the summary under 250 characters. Craft each scene so the narration highlights the core concept and the visualPrompt requests a clean labeled diagram, blueprint, or schematic relevant to the training content. You must output exactly {spec.TargetSceneCount} scenes and {spec.TargetQuizCount} quiz questions, unless the source material is clearly too short to support them (in that case fall back to the maximum coherent number and explain in the summary). Quiz questions must be specific to the document and cover distinct ideas." 
-                },
-                new
-                {
-                    role = "user",
-                    content = $"SOURCE DOCUMENT BEGIN\n{Truncate(documentText, 6000)}\nSOURCE DOCUMENT END"
+                    content = BuildStoryboardRequestMessage(extraction, spec)
                 }
             }
         };
 
+        var serialized = JsonSerializer.Serialize(payload);
+        _logger.LogInformation(
+            "[ProcessKTDocument] AOAI Storyboard submit -> {Uri} Deployment={Deployment} PayloadChars={Chars} WordCount={Words}",
+            requestUri,
+            deployment,
+            serialized.Length,
+            extraction.WordCount);
+
         using var request = new HttpRequestMessage(HttpMethod.Post, requestUri)
         {
-            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            Content = new StringContent(serialized, Encoding.UTF8, "application/json")
         };
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Add("api-key", apiKey);
 
-        _logger.LogInformation("[ProcessKTDocument] AOAI Chat request -> {Uri} Deployment={Deployment} Scenes={Scenes} Quiz={Quiz} InputChars={Chars}", requestUri, deployment, spec.TargetSceneCount, spec.TargetQuizCount, documentText?.Length ?? 0);
         try
         {
             var stopwatch = Stopwatch.StartNew();
@@ -1201,33 +1136,136 @@ public class ProcessKTDocument
             stopwatch.Stop();
             var status = (int)response.StatusCode;
             var responseBody = await response.Content.ReadAsStringAsync();
+
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogError("[ProcessKTDocument] AOAI Chat FAILED Status={Status} ({Reason}) ElapsedMs={Elapsed} BodySnippet={Snippet}", status, response.ReasonPhrase, stopwatch.ElapsedMilliseconds, Truncate(responseBody, 600));
-                return null;
+                _logger.LogError(
+                    "[ProcessKTDocument] AOAI Storyboard FAILED Status={Status} ({Reason}) ElapsedMs={Elapsed} BodySnippet={Snippet}",
+                    status,
+                    response.ReasonPhrase,
+                    stopwatch.ElapsedMilliseconds,
+                    Truncate(responseBody, 800));
+                throw new StoryboardGenerationException($"Azure OpenAI request failed with status {(int)response.StatusCode}: {Truncate(responseBody, 200)}");
             }
-            _logger.LogInformation("[ProcessKTDocument] AOAI Chat OK Status={Status} ElapsedMs={Elapsed} BodyChars={Len}", status, stopwatch.ElapsedMilliseconds, responseBody.Length);
+
+            _logger.LogInformation(
+                "[ProcessKTDocument] AOAI Storyboard OK Status={Status} ElapsedMs={Elapsed} BodyChars={Len}",
+                status,
+                stopwatch.ElapsedMilliseconds,
+                responseBody.Length);
+
             var parsed = TryParseAoaiResponse(responseBody);
             if (parsed == null)
             {
-                _logger.LogWarning("[ProcessKTDocument] AOAI Chat parse returned null (possibly schema mismatch).");
+                throw new StoryboardGenerationException("Azure OpenAI returned an invalid JSON payload.");
             }
+
+            ValidateGenerationResult(parsed, spec);
             return parsed;
         }
         catch (HttpRequestException hre)
         {
-            _logger.LogError(hre, "[ProcessKTDocument] AOAI Chat HttpRequestException: {Message}", hre.Message);
-            return null;
+            throw new StoryboardGenerationException("Azure OpenAI storyboard request failed due to network error.", hre);
         }
         catch (TaskCanceledException tce)
         {
-            _logger.LogError(tce, "[ProcessKTDocument] AOAI Chat timeout/canceled after sending request.");
-            return null;
+            throw new StoryboardGenerationException("Azure OpenAI storyboard request timed out.", tce);
         }
-        catch (Exception ex)
+    }
+
+    private static string BuildStoryboardRequestMessage(DocumentExtractionResult extraction, GenerationSpec spec)
+    {
+        var builder = new StringBuilder(extraction.FullText.Length + 512);
+        builder.AppendLine($"Document: {extraction.DocumentName}");
+        builder.AppendLine($"WordCount: {extraction.WordCount}; EstimatedTokens: {extraction.EstimatedTokenCount}; Segments: {extraction.Segments.Count}");
+        builder.AppendLine($"Produce JSON matching the provided schema with exactly {spec.TargetSceneCount} scenes and {spec.TargetQuizCount} quiz questions. Each scene must include visualPrompt, narration, and keywords sourced from the document. If the information is insufficient, respond with {{\"error\":\"reason\"}}.");
+        builder.AppendLine();
+        builder.AppendLine("DOCUMENT CONTENT BEGIN");
+        for (var i = 0; i < extraction.Segments.Count; i++)
         {
-            _logger.LogError(ex, "[ProcessKTDocument] AOAI Chat unexpected exception.");
-            return null;
+            builder.AppendLine($"--- SEGMENT {i + 1} START ---");
+            builder.AppendLine(extraction.Segments[i]);
+            builder.AppendLine($"--- SEGMENT {i + 1} END ---");
+            builder.AppendLine();
+        }
+        builder.AppendLine("DOCUMENT CONTENT END");
+        builder.AppendLine();
+        builder.AppendLine("Return only JSON – do not include markdown fences or commentary.");
+
+        return builder.ToString();
+    }
+
+    private static void ValidateGenerationResult(GenerationResult result, GenerationSpec spec)
+    {
+        if (result == null)
+        {
+            throw new StoryboardGenerationException("Generation result was null.");
+        }
+
+        if (string.IsNullOrWhiteSpace(result.Summary))
+        {
+            throw new StoryboardGenerationException("Generation result is missing a summary.");
+        }
+
+        if (result.Scenes == null || result.Scenes.Count == 0)
+        {
+            throw new StoryboardGenerationException("Generation result did not include any scenes.");
+        }
+
+        if (result.Quiz == null || result.Quiz.Count == 0)
+        {
+            throw new StoryboardGenerationException("Generation result did not include any quiz questions.");
+        }
+
+        foreach (var (scene, index) in result.Scenes.Select((scene, i) => (scene, i + 1)))
+        {
+            if (scene == null)
+            {
+                throw new StoryboardGenerationException($"Scene {index} is null.");
+            }
+
+            if (string.IsNullOrWhiteSpace(scene.Title))
+            {
+                throw new StoryboardGenerationException($"Scene {index} is missing a title.");
+            }
+
+            if (string.IsNullOrWhiteSpace(scene.Narration))
+            {
+                throw new StoryboardGenerationException($"Scene {index} is missing narration.");
+            }
+
+            if (string.IsNullOrWhiteSpace(scene.VisualPrompt))
+            {
+                throw new StoryboardGenerationException($"Scene {index} is missing a visualPrompt.");
+            }
+        }
+
+        foreach (var (question, index) in result.Quiz.Select((question, i) => (question, i + 1)))
+        {
+            if (question == null)
+            {
+                throw new StoryboardGenerationException($"Quiz question {index} is null.");
+            }
+
+            if (string.IsNullOrWhiteSpace(question.Question))
+            {
+                throw new StoryboardGenerationException($"Quiz question {index} is missing a question stem.");
+            }
+
+            if (question.Options == null || question.Options.Count != 4)
+            {
+                throw new StoryboardGenerationException($"Quiz question {index} must include exactly four options.");
+            }
+        }
+
+        if (result.Scenes.Count < spec.TargetSceneCount)
+        {
+            throw new StoryboardGenerationException($"Generation returned {result.Scenes.Count} scenes but {spec.TargetSceneCount} were requested.");
+        }
+
+        if (result.Quiz.Count < spec.TargetQuizCount)
+        {
+            throw new StoryboardGenerationException($"Generation returned {result.Quiz.Count} quiz questions but {spec.TargetQuizCount} were requested.");
         }
     }
 
@@ -1425,6 +1463,17 @@ public class ProcessKTDocument
         }
     }
 
+    private class StoryboardGenerationException : Exception
+    {
+        public StoryboardGenerationException(string message) : base(message)
+        {
+        }
+
+        public StoryboardGenerationException(string message, Exception innerException) : base(message, innerException)
+        {
+        }
+    }
+
     private record VideoGenerationPayload(byte[] VideoBytes, string? ContentType, byte[]? ThumbnailBytes, string? ThumbnailContentType, double? DurationSeconds, string Prompt, string? OperationId, string? SourceUrl, string? ThumbnailSourceUrl);
 
     private record VideoBinaryInspection(bool IsLikelyMp4, string? BoxFourCc, string? MajorBrand, string HexPrefix, long ByteLength);
@@ -1540,49 +1589,23 @@ public class ProcessKTDocument
                 DocumentLabel = docName
             };
 
-            data.VisualPrompt = string.IsNullOrWhiteSpace(scene.VisualPrompt)
-                ? ComposeVisualPrompt(docName, summary, data.Title, data.Narration, keywords)
-                : scene.VisualPrompt!.Trim();
+            if (string.IsNullOrWhiteSpace(scene.VisualPrompt))
+            {
+                throw new StoryboardGenerationException($"Scene {idx + 1} is missing a visualPrompt.");
+            }
+
+            data.VisualPrompt = scene.VisualPrompt!.Trim();
 
             return data;
         }
 
-        public static SceneData FromFallback(string text, int idx, string summary, string? docName)
-        {
-            var title = CreateTitleFromText(text, idx);
-            var keywords = GuessKeywords(text);
-            return new SceneData
-            {
-                Index = idx + 1,
-                Title = title,
-                Narration = text,
-                Keywords = keywords,
-                Badge = idx switch
-                {
-                    0 => "Overview",
-                    1 => "Deep Dive",
-                    2 => "Benefits",
-                    _ => null
-                },
-                SummaryContext = summary,
-                DocumentLabel = docName,
-                VisualPrompt = ComposeVisualPrompt(docName, summary, title, text, keywords)
-            };
-        }
-
-        public string CreateDefaultVisualPrompt()
-        {
-            return ResolveVisualPrompt();
-        }
-
         public string ResolveVisualPrompt()
         {
-            if (!string.IsNullOrWhiteSpace(VisualPrompt))
+            if (string.IsNullOrWhiteSpace(VisualPrompt))
             {
-                return VisualPrompt!;
+                throw new StoryboardGenerationException($"Scene {Index} does not have a visual prompt.");
             }
 
-            VisualPrompt = ComposeVisualPrompt(DocumentLabel, SummaryContext, Title, Narration, Keywords);
             return VisualPrompt!;
         }
 
@@ -1661,48 +1684,6 @@ public class ProcessKTDocument
                 builder.Append(visuals);
             }
             return builder.ToString();
-        }
-
-        private static List<string> GuessKeywords(string text)
-        {
-            return text.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .Select(w => new string(w.Where(char.IsLetterOrDigit).ToArray()))
-                .Where(w => w.Length > 3)
-                .Select(w => w.ToLowerInvariant())
-                .Distinct()
-                .Take(5)
-                .ToList();
-        }
-
-        private static string ComposeVisualPrompt(string? docName, string summary, string title, string narration, List<string> keywords)
-        {
-            var focusTerms = keywords.Where(k => !string.IsNullOrWhiteSpace(k)).Take(5).ToList();
-            if (!focusTerms.Any())
-            {
-                focusTerms.AddRange(GuessKeywords(narration).Take(5));
-            }
-
-            var focusText = focusTerms.Any() ? string.Join(", ", focusTerms) : title;
-            var docLabel = string.IsNullOrWhiteSpace(docName) ? "the solution" : docName.Replace('_', ' ').Replace('-', ' ');
-
-            var summarySnippet = summary;
-            if (string.IsNullOrWhiteSpace(summarySnippet))
-            {
-                summarySnippet = narration;
-            }
-            summarySnippet = summarySnippet.Length > 220 ? summarySnippet[..220] + "..." : summarySnippet;
-
-            var hintTerms = new List<string>();
-            hintTerms.AddRange(keywords);
-            hintTerms.Add(title);
-            if (!string.IsNullOrWhiteSpace(docName))
-            {
-                hintTerms.Add(docName);
-            }
-
-            var style = DetermineVideoStyle(hintTerms, summarySnippet, narration, docName);
-
-            return $"Create a cinematic scene that embodies {style.StyleName.ToLowerInvariant()} — {style.VisualStyle}. Spotlight {focusText}. Context: {summarySnippet}. Camera movement: {style.Motion}. Lighting: {style.Lighting}. Avoid {style.Avoid}.";
         }
     }
 

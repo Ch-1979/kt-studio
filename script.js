@@ -673,10 +673,20 @@ async function sendChatMessage(question) {
             })
         });
 
-        const data = await resp.json().catch(() => ({}));
+        const rawBody = await resp.text();
+        let data = null;
+        if (rawBody) {
+            try {
+                data = JSON.parse(rawBody);
+            } catch (parseErr) {
+                console.warn('[chatbot] Non-JSON response payload', { status: resp.status, body: rawBody, error: parseErr });
+            }
+        }
+
         if (!resp.ok) {
-            const message = data?.error || `HTTP ${resp.status}`;
-            const detailText = data?.details ? ` ${formatErrorDetails(data.details)}` : '';
+            const message = (data && data.error) ? data.error : (rawBody || `HTTP ${resp.status}`);
+            const detailSource = data && (data.details || data.trace || data.response);
+            const detailText = detailSource ? ` ${formatErrorDetails(detailSource)}` : '';
             appendChatMessage('bot', `I hit a snag answering that: ${message}${detailText}`);
             setChatStatus('');
             chatState.isLoading = false;
@@ -684,7 +694,7 @@ async function sendChatMessage(question) {
             return;
         }
 
-        const answer = data?.answer || 'I was unable to find relevant information in the document.';
+        const answer = (data && data.answer) ? data.answer : 'I was unable to find relevant information in the document.';
         appendChatMessage('bot', answer, { subtitle: `Source: ${chatState.selectedDoc}` });
         chatState.history.push({ role: 'assistant', content: answer });
         setChatStatus('');

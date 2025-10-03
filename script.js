@@ -676,7 +676,8 @@ async function sendChatMessage(question) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
             const message = data?.error || `HTTP ${resp.status}`;
-            appendChatMessage('bot', `I hit a snag answering that: ${message}`);
+            const detailText = data?.details ? ` ${formatErrorDetails(data.details)}` : '';
+            appendChatMessage('bot', `I hit a snag answering that: ${message}${detailText}`);
             setChatStatus('');
             chatState.isLoading = false;
             if (elements.chatInput) elements.chatInput.disabled = false;
@@ -743,6 +744,18 @@ function escapeHtml(str) {
             default: return match;
         }
     });
+}
+
+function formatErrorDetails(details) {
+    if (!details) return '';
+    try {
+        if (typeof details === 'string') {
+            return `(${details})`;
+        }
+        return `(${JSON.stringify(details)})`;
+    } catch (err) {
+        return '';
+    }
 }
 
 async function loadSelectedProcessedDoc() {

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import traceback
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import azure.functions as func  # type: ignore
 import requests
@@ -77,28 +78,36 @@ def handle_request(req: func.HttpRequest) -> func.HttpResponse:  # type: ignore
     except RuntimeError as exc:  # pragma: no cover - configuration errors are runtime issues
         return _cors_response(503, json.dumps({"error": str(exc)}))
 
-    video_json = load_processed_video(doc_name)
-    if not video_json:
-        return _cors_response(404, json.dumps({"error": f"No processed video manifest found for {doc_name}"}))
+    try:
+        video_json = load_processed_video(doc_name)
+        if not video_json:
+            return _cors_response(404, json.dumps({"error": f"No processed video manifest found for {doc_name}"}))
 
-    quiz_json = load_processed_quiz(doc_name)
+        quiz_json = load_processed_quiz(doc_name)
 
-    context_block = _build_context(video_json, quiz_json)
-    if not context_block:
-        return _cors_response(500, json.dumps({"error": "Unable to build context for chat"}))
+        context_block = _build_context(video_json, quiz_json)
+        if not context_block:
+            return _cors_response(500, json.dumps({"error": "Unable to build context for chat"}))
 
-    chat_messages = _build_messages(question, context_block, history)
+        chat_messages = _build_messages(question, context_block, history)
 
-    answer, usage = _invoke_chat_completion(config, chat_messages)
-    if answer is None:
-        return _cors_response(502, json.dumps({"error": "Chat completion request failed"}))
+        answer, usage, error_details = _invoke_chat_completion(config, chat_messages)
+        if answer is None:
+            payload = {"error": "Chat completion request failed"}
+            if error_details:
+                payload["details"] = error_details
+            return _cors_response(502, json.dumps(payload))
 
-    response_body = {
-        "answer": answer.strip(),
-        "docName": doc_name,
-        "usage": usage,
-    }
-    return _cors_response(200, json.dumps(response_body))
+        response_body = {
+            "answer": answer.strip(),
+            "docName": doc_name,
+            "usage": usage,
+        }
+        return _cors_response(200, json.dumps(response_body))
+    except Exception as exc:  # pragma: no cover - defensive catch for production visibility
+        trace = traceback.format_exc(limit=6)
+        print(f"[chatbot] Unhandled exception: {exc}\n{trace}")
+        return _cors_response(500, json.dumps({"error": str(exc), "trace": trace}))
 
 
 def _build_context(video_json: Dict[str, Any], quiz_json: Optional[Dict[str, Any]]) -> str:
@@ -160,7 +169,9 @@ def _build_messages(question: str, context_block: str, history: Optional[Iterabl
     return messages
 
 
-def _invoke_chat_completion(config: ChatConfig, messages: List[Dict[str, str]]) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+def _invoke_chat_completion(
+    config: ChatConfig, messages: List[Dict[str, str]]
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     url = f"{config.endpoint}/openai/deployments/{config.deployment}/chat/completions"
     params = {"api-version": config.api_version}
     payload = {
@@ -173,26 +184,30 @@ def _invoke_chat_completion(config: ChatConfig, messages: List[Dict[str, str]]) 
         "api-key": config.key,
     }
 
+    response_text = ""
     try:
         response = requests.post(url, params=params, headers=headers, json=payload, timeout=30)
+        response_text = response.text
         if response.status_code >= 400:
-            print(f"[chatbot] Azure OpenAI call failed: {response.status_code} {response.text[:300]}")
-            return None, None
+            snippet = response_text[:800]
+            print(f"[chatbot] Azure OpenAI call failed: {response.status_code} {snippet}")
+            return None, None, {"status": response.status_code, "response": snippet}
         data = response.json()
     except requests.RequestException as exc:  # pragma: no cover - network errors
         print(f"[chatbot] Azure OpenAI request exception: {exc}")
-        return None, None
+        return None, None, {"message": str(exc)}
     except ValueError:
+        snippet = response_text[:800]
         print("[chatbot] Failed to decode Azure OpenAI response JSON")
-        return None, None
+        return None, None, {"message": "Invalid JSON from Azure OpenAI", "response": snippet}
 
     choices = data.get("choices") if isinstance(data, dict) else None
     if not choices:
-        return None, data.get("usage") if isinstance(data, dict) else None
+        return None, data.get("usage") if isinstance(data, dict) else None, {"message": "No choices in response"}
 
     message = choices[0].get("message") or {}
     content = message.get("content")
     if isinstance(content, list):  # new SDK style may return list of text chunks
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
     usage = data.get("usage") if isinstance(data, dict) else None
-    return (content or None), usage
+    return (content or None), usage, None

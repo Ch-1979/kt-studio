@@ -1,7 +1,5 @@
 // Storyboard playback configuration
-const MIN_SCENE_DURATION_SECONDS = 10;
-const MIN_TOTAL_RUNTIME_SECONDS = 60;
-const MAX_TOTAL_RUNTIME_SECONDS = 120;
+const SCENE_DURATION_SECONDS = 8; // default duration per scene when animating
 
 // Global state management
 let appState = {
@@ -12,10 +10,7 @@ let appState = {
     currentProgress: 0,
     selectedFileName: '',
     currentSceneIndex: 0,
-    totalDurationSeconds: 0,
-    elapsedSeconds: 0,
-    sceneDurations: [],
-    sceneOffsets: []
+    totalDurationSeconds: 0
 };
 
 let videoScenes = []; // normalized scenes currently loaded into the player
@@ -200,9 +195,8 @@ function handleWatchVideo() {
 function handlePlayPause() {
     if (!videoScenes.length) return;
 
-    if (!appState.isVideoPlaying && appState.elapsedSeconds >= Math.max(appState.totalDurationSeconds - 0.5, 0)) {
-        updateScene(0);
-        setElapsedSeconds(0, { updateScene: false });
+    if (!appState.isVideoPlaying && appState.currentProgress >= 100) {
+        updateScene(0, { progressOverride: 0 });
     }
 
     if (appState.isVideoPlaying) {
@@ -220,6 +214,8 @@ function startPlayback() {
     elements.playPauseButton.innerHTML = '<i class="fas fa-pause"></i>';
 
     const tickMs = 200;
+    const totalSeconds = Math.max(appState.totalDurationSeconds, videoScenes.length * SCENE_DURATION_SECONDS);
+    const progressIncrement = (tickMs / (totalSeconds * 1000)) * 100;
 
     playbackInterval = setInterval(() => {
         if (!appState.isVideoPlaying) {
@@ -227,13 +223,19 @@ function startPlayback() {
             return;
         }
 
-        const nextElapsed = appState.elapsedSeconds + tickMs / 1000;
-        if (nextElapsed >= appState.totalDurationSeconds) {
-            setElapsedSeconds(appState.totalDurationSeconds, { updateScene: true });
-            pausePlayback({ reachedEnd: true });
-            return;
+        appState.currentProgress = Math.min(100, appState.currentProgress + progressIncrement);
+        elements.progressBar.value = Math.round(appState.currentProgress);
+        updateTimeDisplay();
+
+        const sceneFloat = (appState.currentProgress / 100) * videoScenes.length;
+        const nextSceneIndex = Math.min(videoScenes.length - 1, Math.floor(sceneFloat));
+        if (nextSceneIndex !== appState.currentSceneIndex) {
+            updateScene(nextSceneIndex, { suppressProgressSync: true });
         }
-        setElapsedSeconds(nextElapsed, { updateScene: true });
+
+        if (appState.currentProgress >= 100) {
+            pausePlayback({ reachedEnd: true });
+        }
     }, tickMs);
 }
 
@@ -250,10 +252,9 @@ function pausePlayback(options = {}) {
 function handleProgressChange(event) {
     if (!videoScenes.length) return;
     const value = parseInt(event.target.value, 10);
+    const sceneIndex = Math.min(videoScenes.length - 1, Math.floor((value / 100) * videoScenes.length));
     pausePlayback();
-    const total = Math.max(appState.totalDurationSeconds, 1);
-    const elapsed = (value / 100) * total;
-    setElapsedSeconds(elapsed, { updateScene: true });
+    updateScene(sceneIndex, { progressOverride: value });
 }
 
 function jumpScene(delta) {
@@ -261,13 +262,11 @@ function jumpScene(delta) {
     const nextIndex = Math.min(videoScenes.length - 1, Math.max(0, appState.currentSceneIndex + delta));
     pausePlayback();
     updateScene(nextIndex);
-    const startTime = getSceneStartTime(nextIndex);
-    setElapsedSeconds(startTime, { updateScene: false });
 }
 
 function updateTimeDisplay() {
-    const total = Math.max(Math.round(appState.totalDurationSeconds || 0), 0);
-    const currentSeconds = Math.round(appState.elapsedSeconds || 0);
+    const total = Math.max(appState.totalDurationSeconds, videoScenes.length * SCENE_DURATION_SECONDS);
+    const currentSeconds = Math.round((appState.currentProgress / 100) * total);
     elements.currentTime.textContent = formatTime(currentSeconds);
     elements.totalTime.textContent = formatTime(total);
 }
@@ -277,8 +276,9 @@ function updateVideoPlayer() {
         elements.videoTitle.textContent = `Project: ${toTitleCase(extractDocBase(appState.selectedFileName))}`;
     }
 
-    updateScene(appState.currentSceneIndex ?? 0);
-    setElapsedSeconds(appState.elapsedSeconds || 0, { updateScene: false });
+    updateScene(appState.currentSceneIndex ?? 0, { progressOverride: appState.currentProgress });
+    elements.progressBar.value = Math.round(appState.currentProgress);
+    updateTimeDisplay();
 }
 
 // Quiz functionality
@@ -483,15 +483,11 @@ function hydrateStoryboardFromJson(videoJson) {
 
     appState.currentSceneIndex = 0;
     appState.currentProgress = 0;
-    const timing = calculateSceneTimings(videoScenes);
-    appState.sceneDurations = timing.durations;
-    appState.sceneOffsets = timing.offsets;
-    appState.totalDurationSeconds = timing.total;
-    appState.elapsedSeconds = 0;
+    appState.totalDurationSeconds = videoScenes.length * SCENE_DURATION_SECONDS;
 
     renderSceneIndicators();
-    updateScene(0);
-    setElapsedSeconds(0, { updateScene: false });
+    updateScene(0, { progressOverride: 0 });
+    updateTimeDisplay();
 }
 
 function normalizeScenes(rawScenes, fallbackSummary) {
@@ -540,154 +536,7 @@ function buildSceneFromText(text, idx) {
     };
 }
 
-function calculateSceneTimings(scenes) {
-    if (!Array.isArray(scenes) || !scenes.length) {
-        return {
-            durations: [],
-            offsets: [],
-            total: MIN_TOTAL_RUNTIME_SECONDS
-        };
-    }
-
-    const wordCounts = scenes.map(scene => countWords(scene.text));
-    const totalWords = wordCounts.reduce((sum, count) => sum + count, 0);
-
-    const estimatedTotal = totalWords > 0
-        ? totalWords / 2.2
-        : scenes.length * (MIN_SCENE_DURATION_SECONDS + 5);
-
-    let targetTotal = Math.max(
-        MIN_TOTAL_RUNTIME_SECONDS,
-        Math.min(MAX_TOTAL_RUNTIME_SECONDS, estimatedTotal)
-    );
-
-    targetTotal = Math.max(targetTotal, scenes.length * MIN_SCENE_DURATION_SECONDS);
-    targetTotal = Math.round(targetTotal);
-    if (!Number.isFinite(targetTotal) || targetTotal <= 0) {
-        targetTotal = Math.max(MIN_TOTAL_RUNTIME_SECONDS, scenes.length * MIN_SCENE_DURATION_SECONDS);
-    }
-
-    let durations = scenes.map((scene, idx) => {
-        const weight = totalWords > 0 ? wordCounts[idx] / totalWords : 1 / scenes.length;
-        const share = targetTotal * weight;
-        return Math.max(MIN_SCENE_DURATION_SECONDS, Math.round(share));
-    });
-
-    durations = normalizeDurations(durations, targetTotal, MIN_SCENE_DURATION_SECONDS);
-
-    const offsets = [];
-    let running = 0;
-    durations.forEach((duration, idx) => {
-        offsets[idx] = running;
-        running += duration;
-    });
-
-    return {
-        durations,
-        offsets,
-        total: running || targetTotal
-    };
-}
-
-function normalizeDurations(durations, targetTotal, minValue) {
-    if (!durations.length) return durations;
-
-    let sum = durations.reduce((acc, duration) => acc + duration, 0);
-    if (sum === 0) {
-        const evenDuration = Math.max(minValue, Math.round(targetTotal / durations.length));
-        return durations.map(() => evenDuration);
-    }
-
-    const scale = targetTotal / sum;
-    durations = durations.map(duration => Math.max(minValue, Math.round(duration * scale)));
-
-    let diff = targetTotal - durations.reduce((acc, duration) => acc + duration, 0);
-    let guard = 0;
-    while (diff !== 0 && guard < 1000) {
-        for (let i = 0; i < durations.length && diff !== 0; i++) {
-            if (diff > 0) {
-                durations[i] += 1;
-                diff -= 1;
-            } else if (durations[i] > minValue) {
-                durations[i] -= 1;
-                diff += 1;
-            }
-        }
-        guard++;
-    }
-
-    return durations;
-}
-
-function countWords(text) {
-    if (!text) return 0;
-    return text
-        .toString()
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-        .length;
-}
-
-function getSceneStartTime(index) {
-    if (!Array.isArray(appState.sceneOffsets) || !appState.sceneOffsets.length) {
-        const perScene = appState.totalDurationSeconds / Math.max(videoScenes.length, 1);
-        return Math.max(0, perScene * index);
-    }
-    const safeIndex = Math.min(Math.max(index, 0), appState.sceneOffsets.length - 1);
-    return appState.sceneOffsets[safeIndex] ?? 0;
-}
-
-function getSceneIndexForElapsed(elapsed) {
-    if (!Array.isArray(appState.sceneDurations) || !appState.sceneDurations.length) {
-        const perScene = appState.totalDurationSeconds / Math.max(videoScenes.length, 1);
-        if (perScene <= 0) return 0;
-        return Math.min(videoScenes.length - 1, Math.floor(elapsed / perScene));
-    }
-
-    let running = 0;
-    for (let i = 0; i < appState.sceneDurations.length; i++) {
-        running += appState.sceneDurations[i];
-        if (elapsed < running || i === appState.sceneDurations.length - 1) {
-            return i;
-        }
-    }
-
-    return appState.sceneDurations.length - 1;
-}
-
-function setElapsedSeconds(seconds, options = {}) {
-    if (!videoScenes.length) {
-        appState.elapsedSeconds = 0;
-        appState.currentProgress = 0;
-        elements.progressBar.value = 0;
-        updateTimeDisplay();
-        return;
-    }
-
-    const { updateScene = true, skipSliderUpdate = false } = options;
-    const total = Math.max(appState.totalDurationSeconds, MIN_TOTAL_RUNTIME_SECONDS);
-    const clamped = Math.min(Math.max(seconds, 0), total);
-    appState.elapsedSeconds = clamped;
-    appState.currentProgress = (clamped / total) * 100;
-
-    if (!skipSliderUpdate) {
-        elements.progressBar.value = Math.round(appState.currentProgress);
-    }
-
-    updateTimeDisplay();
-
-    if (updateScene) {
-        const nextIndex = getSceneIndexForElapsed(clamped);
-        if (nextIndex !== appState.currentSceneIndex) {
-            updateScene(nextIndex);
-        } else {
-            highlightSceneIndicator(nextIndex);
-        }
-    }
-}
-
-function updateScene(index) {
+function updateScene(index, options = {}) {
     if (!videoScenes.length) {
         elements.sceneBackdrop.style.background = createGradient(0);
         elements.sceneBadge.textContent = '';
@@ -700,6 +549,7 @@ function updateScene(index) {
         return;
     }
 
+    const { progressOverride = null, suppressProgressSync = false } = options;
     const safeIndex = Math.min(videoScenes.length - 1, Math.max(0, index));
     const scene = videoScenes[safeIndex];
 
@@ -730,6 +580,14 @@ function updateScene(index) {
     elements.sceneIndex.textContent = scene.index ?? safeIndex + 1;
     elements.sceneCount.textContent = videoScenes.length;
     highlightSceneIndicator(safeIndex);
+
+    if (progressOverride !== null) {
+        appState.currentProgress = progressOverride;
+    } else if (!suppressProgressSync) {
+        appState.currentProgress = (safeIndex / videoScenes.length) * 100;
+    }
+    elements.progressBar.value = Math.round(appState.currentProgress);
+    updateTimeDisplay();
 }
 
 function renderSceneKeywords(keywords) {
@@ -752,8 +610,7 @@ function renderSceneIndicators() {
         dot.addEventListener('click', () => {
             pausePlayback();
             updateScene(idx);
-            const startTime = getSceneStartTime(idx);
-            setElapsedSeconds(startTime, { updateScene: false });
+            updateTimeDisplay();
         });
         elements.sceneIndicatorRow.appendChild(dot);
     });

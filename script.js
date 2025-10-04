@@ -601,37 +601,6 @@ function appendChatbotMessage(role, text, sources, meta = {}) {
         bubble.appendChild(errorNote);
     }
 
-    if (safeRole === 'assistant' && Array.isArray(sources) && sources.length) {
-        const sourcesBlock = document.createElement('div');
-        sourcesBlock.className = 'chatbot-sources';
-        const titleEl = document.createElement('strong');
-        titleEl.textContent = 'Sources';
-        sourcesBlock.appendChild(titleEl);
-
-        sources.slice(0, 3).forEach((source) => {
-            if (!source) return;
-            const item = document.createElement('div');
-            item.className = 'chatbot-source-item';
-
-            const heading = document.createElement('div');
-            heading.style.fontWeight = '600';
-            heading.textContent = source.title || 'Storyboard';
-            item.appendChild(heading);
-
-            if (source.snippet) {
-                const snippet = document.createElement('div');
-                snippet.textContent = source.snippet;
-                snippet.style.fontSize = '12px';
-                snippet.style.color = '#475569';
-                item.appendChild(snippet);
-            }
-
-            sourcesBlock.appendChild(item);
-        });
-
-        bubble.appendChild(sourcesBlock);
-    }
-
     wrapper.appendChild(bubble);
     chatbotElements.messages.appendChild(wrapper);
     scrollChatToBottom();

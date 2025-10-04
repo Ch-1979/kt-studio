@@ -187,6 +187,35 @@
         </footer>
     </div>
 
+    <div class="chatbot-container" aria-live="polite">
+        <button id="chatbotLauncher" class="chatbot-launcher" type="button" aria-expanded="false">
+            <i class="fas fa-comments"></i>
+            <span>Ask KT Copilot</span>
+        </button>
+        <section id="chatbotPanel" class="chatbot-panel" aria-hidden="true" aria-label="KT Copilot chat">
+            <header class="chatbot-header">
+                <div class="chatbot-title-group">
+                    <span class="chatbot-title">KT Copilot</span>
+                    <span id="chatbotDocLabel" class="chatbot-doc-label">No document selected</span>
+                </div>
+                <button id="chatbotCloseButton" class="chatbot-close" type="button" aria-label="Close chat">
+                    <i class="fas fa-xmark"></i>
+                </button>
+            </header>
+            <div id="chatbotMessages" class="chatbot-messages" role="log"></div>
+            <footer class="chatbot-footer">
+                <div id="chatbotStatus" class="chatbot-status">Select a document to unlock contextual Q&amp;A.</div>
+                <div class="chatbot-input-row">
+                    <input id="chatbotInput" class="chatbot-input" type="text" placeholder="Questions will unlock after selecting a doc." autocomplete="off" disabled>
+                    <button id="chatbotSendButton" class="chatbot-send" type="button" disabled>
+                        <span class="send-label">Send</span>
+                        <span class="send-spinner" aria-hidden="true"></span>
+                    </button>
+                </div>
+            </footer>
+        </section>
+    </div>
+
     <script src="script.js"></script>
 </body>
 </html>

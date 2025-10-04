@@ -10,7 +10,9 @@ let appState = {
     currentProgress: 0,
     selectedFileName: '',
     currentSceneIndex: 0,
-    totalDurationSeconds: 0
+    totalDurationSeconds: 0,
+    currentDocName: '',
+    chatHistory: []
 };
 
 let videoScenes = []; // normalized scenes currently loaded into the player
@@ -63,6 +65,26 @@ const processedElements = {
     hint: document.getElementById('processedDocsHint')
 };
 
+const chatbotElements = {
+    container: document.querySelector('.chatbot-container'),
+    launcher: document.getElementById('chatbotLauncher'),
+    panel: document.getElementById('chatbotPanel'),
+    closeButton: document.getElementById('chatbotCloseButton'),
+    messages: document.getElementById('chatbotMessages'),
+    status: document.getElementById('chatbotStatus'),
+    input: document.getElementById('chatbotInput'),
+    sendButton: document.getElementById('chatbotSendButton'),
+    docLabel: document.getElementById('chatbotDocLabel')
+};
+
+const chatbotState = {
+    isOpen: false,
+    isThinking: false,
+    hasGreeted: false,
+    statusIdleMessage: 'Select a document to unlock contextual Q&A.',
+    lastDocName: null
+};
+
 let loadedVideoData = null; // stores currently loaded generated video JSON
 let loadedQuizData = null;  // stores currently loaded generated quiz JSON
 
@@ -70,6 +92,7 @@ let loadedQuizData = null;  // stores currently loaded generated quiz JSON
 document.addEventListener('DOMContentLoaded', function() {
     initializeEventListeners();
     updateUI();
+    initializeChatbot();
 });
 
 // Event Listeners
@@ -99,6 +122,26 @@ function initializeEventListeners() {
             handleQuizOptionSelection(e.target.value);
         }
     });
+
+    // Chatbot interactions
+    if (chatbotElements.launcher) chatbotElements.launcher.addEventListener('click', () => toggleChatbot());
+    if (chatbotElements.closeButton) chatbotElements.closeButton.addEventListener('click', closeChatbot);
+    if (chatbotElements.sendButton) chatbotElements.sendButton.addEventListener('click', sendChatbotMessage);
+    if (chatbotElements.input) {
+        chatbotElements.input.addEventListener('input', updateChatbotInputState);
+        chatbotElements.input.addEventListener('keydown', function(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendChatbotMessage();
+            }
+        });
+    }
+
+    document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape' && chatbotState.isOpen) {
+            closeChatbot();
+        }
+    });
 }
 
 // Upload functionality
@@ -126,6 +169,8 @@ async function handleFileSelection(event) {
         const meta = await resp.json();
         elements.uploadStatus.textContent = `Uploaded ${meta.fileName} (${meta.uploadedBytes} bytes)`;
         appState.isFileUploaded = true;
+    appState.currentDocName = meta.docName || '';
+    updateChatbotContext();
         elements.videoStatus.textContent = 'Status: Waiting for processing...';
         pollProcessingStatus(meta.docName);
     } catch (e) {
@@ -465,6 +510,8 @@ function applyLoadedVideo(docName, videoJson) {
     appState.selectedFileName = docName + '.txt';
     appState.isFileUploaded = true;
     appState.isVideoReady = true;
+    appState.currentDocName = docName || '';
+    updateChatbotContext();
     elements.videoStatus.textContent = 'Status: Ready (loaded)';
     elements.fileNameDisplay.textContent = docName + '.txt';
     hydrateStoryboardFromJson(videoJson);
@@ -472,6 +519,234 @@ function applyLoadedVideo(docName, videoJson) {
     if (loadedQuizData && loadedQuizData.questions) {
         elements.takeQuizButton.style.display = 'block';
     }
+}
+
+// ---------------- Chatbot Integration ---------------- //
+
+function initializeChatbot() {
+    if (chatbotElements.panel) {
+        chatbotElements.panel.classList.add('empty');
+        chatbotElements.panel.setAttribute('aria-hidden', 'true');
+    }
+    if (chatbotElements.launcher) {
+        chatbotElements.launcher.setAttribute('aria-expanded', 'false');
+    }
+    updateChatbotContext();
+    refreshChatbotStatus();
+    updateChatbotInputState();
+}
+
+function toggleChatbot(forceOpen) {
+    const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !chatbotState.isOpen;
+    if (shouldOpen) {
+        openChatbot();
+    } else {
+        closeChatbot();
+    }
+}
+
+function openChatbot() {
+    if (!chatbotElements.panel) return;
+    chatbotState.isOpen = true;
+    chatbotElements.panel.classList.add('open');
+    chatbotElements.panel.setAttribute('aria-hidden', 'false');
+    if (chatbotElements.launcher) {
+        chatbotElements.launcher.setAttribute('aria-expanded', 'true');
+    }
+    ensureChatbotGreeting();
+    scrollChatToBottom();
+    setTimeout(() => {
+        if (chatbotElements.input && !chatbotElements.input.disabled) {
+            chatbotElements.input.focus();
+        }
+    }, 120);
+}
+
+function closeChatbot() {
+    if (!chatbotElements.panel) return;
+    chatbotState.isOpen = false;
+    chatbotElements.panel.classList.remove('open');
+    chatbotElements.panel.setAttribute('aria-hidden', 'true');
+    if (chatbotElements.launcher) {
+        chatbotElements.launcher.setAttribute('aria-expanded', 'false');
+    }
+}
+
+function ensureChatbotGreeting() {
+    if (chatbotState.hasGreeted) return;
+    appendChatbotMessage('assistant', "Hi! I'm KT Copilot. Load or select a KT document and I'll answer questions using its storyboard and quiz context.");
+    chatbotState.hasGreeted = true;
+}
+
+function appendChatbotMessage(role, text, sources) {
+    if (!chatbotElements.messages) return;
+    if (chatbotElements.panel) {
+        chatbotElements.panel.classList.remove('empty');
+    }
+
+    const safeRole = role === 'user' ? 'user' : 'assistant';
+    const wrapper = document.createElement('div');
+    wrapper.className = `chat-message chat-${safeRole}`;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-bubble';
+    appendTextAsParagraphs(bubble, text);
+
+    if (safeRole === 'assistant' && Array.isArray(sources) && sources.length) {
+        const sourcesBlock = document.createElement('div');
+        sourcesBlock.className = 'chatbot-sources';
+        const titleEl = document.createElement('strong');
+        titleEl.textContent = 'Sources';
+        sourcesBlock.appendChild(titleEl);
+
+        sources.slice(0, 3).forEach((source) => {
+            if (!source) return;
+            const item = document.createElement('div');
+            item.className = 'chatbot-source-item';
+
+            const heading = document.createElement('div');
+            heading.style.fontWeight = '600';
+            heading.textContent = source.title || 'Storyboard';
+            item.appendChild(heading);
+
+            if (source.snippet) {
+                const snippet = document.createElement('div');
+                snippet.textContent = source.snippet;
+                snippet.style.fontSize = '12px';
+                snippet.style.color = '#475569';
+                item.appendChild(snippet);
+            }
+
+            sourcesBlock.appendChild(item);
+        });
+
+        bubble.appendChild(sourcesBlock);
+    }
+
+    wrapper.appendChild(bubble);
+    chatbotElements.messages.appendChild(wrapper);
+    scrollChatToBottom();
+}
+
+function appendTextAsParagraphs(container, text) {
+    const content = (text || '').toString().trim();
+    if (!content) {
+        const emptyParagraph = document.createElement('p');
+        emptyParagraph.textContent = 'No response available right now.';
+        container.appendChild(emptyParagraph);
+        return;
+    }
+
+    content.split(/\n{2,}/).forEach((block) => {
+        const paragraph = document.createElement('p');
+        paragraph.textContent = block.replace(/\n/g, ' ').trim();
+        container.appendChild(paragraph);
+    });
+}
+
+function scrollChatToBottom() {
+    if (!chatbotElements.messages) return;
+    chatbotElements.messages.scrollTop = chatbotElements.messages.scrollHeight;
+}
+
+function updateChatbotContext() {
+    const docName = (appState.currentDocName || '').trim();
+    const friendlyDocName = docName ? extractDocBase(docName) || docName : '';
+
+    if (chatbotElements.docLabel) {
+        chatbotElements.docLabel.textContent = friendlyDocName ? `Context: ${friendlyDocName}` : 'No document selected';
+    }
+
+    if (chatbotElements.input) {
+        if (friendlyDocName) {
+            chatbotElements.input.placeholder = `Ask something about ${friendlyDocName}...`;
+        } else {
+            chatbotElements.input.placeholder = 'Questions will unlock after selecting a doc.';
+            chatbotElements.input.value = '';
+        }
+    }
+
+    chatbotState.statusIdleMessage = docName
+        ? 'Ask a question and I will reference your storyboard and quiz context.'
+        : 'Select a document to unlock contextual Q&A.';
+
+    if (docName && chatbotState.hasGreeted && docName !== chatbotState.lastDocName) {
+        const announcementName = friendlyDocName || docName;
+        appendChatbotMessage('assistant', `Context is ready for ${announcementName}. Ask me anything about this KT package for quick answers.`);
+    }
+
+    chatbotState.lastDocName = docName || null;
+
+    refreshChatbotStatus();
+    updateChatbotInputState();
+}
+
+function refreshChatbotStatus() {
+    if (!chatbotElements.status) return;
+    chatbotElements.status.textContent = chatbotState.isThinking ? 'Thinking...' : chatbotState.statusIdleMessage;
+}
+
+function updateChatbotInputState() {
+    if (!chatbotElements.sendButton || !chatbotElements.input) return;
+    const hasDoc = Boolean(getActiveDocName());
+    const hasQuestion = chatbotElements.input.value.trim().length > 0;
+    const canSend = hasDoc && hasQuestion && !chatbotState.isThinking;
+
+    chatbotElements.sendButton.disabled = !canSend;
+    chatbotElements.sendButton.classList.toggle('is-thinking', chatbotState.isThinking);
+    chatbotElements.input.disabled = chatbotState.isThinking ? true : !hasDoc;
+}
+
+function getActiveDocName() {
+    return (appState.currentDocName || '').trim();
+}
+
+async function sendChatbotMessage() {
+    if (!chatbotElements.input || !chatbotElements.sendButton) return;
+    if (chatbotState.isThinking) return;
+
+    const question = chatbotElements.input.value.trim();
+    const docName = getActiveDocName();
+
+    if (!question || !docName) {
+        updateChatbotInputState();
+        return;
+    }
+
+    appendChatbotMessage('user', question);
+    appState.chatHistory.push({ role: 'user', message: question, timestamp: Date.now() });
+    chatbotElements.input.value = '';
+    updateChatbotInputState();
+    setChatbotThinking(true);
+
+    try {
+        const base = window.location.origin;
+        const response = await fetch(`${base}/api/chatbot/ask`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question, docName })
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const payload = await response.json();
+        const answer = payload.answer || "I'm not sure how to answer that right now.";
+        appendChatbotMessage('assistant', answer, payload.sources);
+        appState.chatHistory.push({ role: 'assistant', message: answer, timestamp: Date.now(), sources: payload.sources });
+    } catch (error) {
+        console.error('Chatbot request failed', error);
+        appendChatbotMessage('assistant', "I couldn't reach the knowledge base right now. Please try again in a moment.");
+    } finally {
+        setChatbotThinking(false);
+    }
+}
+
+function setChatbotThinking(isThinking) {
+    chatbotState.isThinking = isThinking;
+    refreshChatbotStatus();
+    updateChatbotInputState();
 }
 
 function hydrateStoryboardFromJson(videoJson) {

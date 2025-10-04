@@ -10,6 +10,7 @@ KT Studio converts uploaded knowledge-transfer documents into an interactive sto
 - **Optional scene art** – Provide an Azure OpenAI image deployment (DALL·E 3 or `gpt-image-1`) to generate still imagery. When disabled the player falls back to gradients.
 - **Pure frontend playback** – No embedded video pipeline; the UI animates scenes, highlights keywords, and drives the quiz experience.
 - **Processed doc catalog** – Quickly reload previous runs from blob storage using the processed document dropdown.
+- **Document-aware chatbot** – A bottom-left KT Copilot answers follow-up questions using the generated storyboard and quiz context.
 
 ## Architecture at a Glance
 | Layer | Stack | Purpose |
@@ -33,6 +34,7 @@ Apply these settings on the C# Function App (and `local.settings.json` for local
 AzureOpenAI:Endpoint        = https://<openai-resource>.openai.azure.com/
 AzureOpenAI:ApiKey          = <api-key>
 AzureOpenAI:Deployment      = gpt-4o-mini       # chat completion that returns storyboard JSON
+AzureOpenAI:ChatDeployment  = gpt-4o-mini       # optional override for chatbot responses (defaults to Deployment)
 AzureOpenAI:ImageDeployment = dall-e-3          # optional image deployment (omit to skip art)
 ```
 
@@ -54,6 +56,8 @@ python -m http.server 5500
 # then open http://localhost:5500
 ```
 Or use VS Code Live Server / double-click `index.html`.
+
+KT Copilot lives in the bottom-left corner. Once a document is processed or loaded from the catalog, you can ask follow-up questions and it will answer from the generated storyboard and quiz data.
 
 ### Python Functions API
 ```powershell
@@ -80,6 +84,7 @@ Ensure `local.settings.json` contains the Azure Storage connection string plus O
 | `/api/status/<doc>` | GET | Returns `{ ready, video, quiz }` flags |
 | `/api/video/<doc>` | GET | Retrieves generated storyboard JSON |
 | `/api/quiz/<doc>` | GET | Retrieves quiz JSON |
+| `/api/chatbot/ask` | POST | Answers KT questions using storyboard + quiz context |
 | `/api/list/docs` | GET | Lists known processed document bases |
 
 ## Deployment Notes

@@ -118,8 +118,8 @@ function initializeEventListeners() {
     
     // Quiz option selection
     document.addEventListener('change', function(e) {
-        if (e.target.type === 'radio' && e.target.name === 'q1') {
-            handleQuizOptionSelection(e.target.value);
+        if (e.target && e.target.type === 'radio' && e.target.name) {
+            handleQuizOptionSelection();
         }
     });
 
@@ -345,7 +345,7 @@ function handleTakeQuiz() {
     });
 }
 
-function handleQuizOptionSelection(value) {
+function handleQuizOptionSelection() {
     elements.submitQuizButton.style.display = 'block';
     elements.submitQuizButton.classList.add('fade-in');
 }
@@ -354,46 +354,127 @@ function handleSubmitQuiz() {
     const activeQuizContainer = document.getElementById('activeQuiz');
     const questionBlocks = activeQuizContainer.querySelectorAll('[data-question-id]');
     if (!questionBlocks.length) {
-        showQuizResult('Quiz not loaded.', 'incorrect');
+        showQuizResult({ message: 'Quiz not loaded.', type: 'incorrect' });
         return;
     }
 
     let allAnswered = true;
-    let allCorrect = true;
     questionBlocks.forEach(block => {
-        const qid = block.getAttribute('data-question-id');
         const selected = block.querySelector('input[type="radio"]:checked');
         if (!selected) {
             allAnswered = false;
-            return;
         }
-        const correct = selected.dataset.correct === 'true';
-        if (!correct) {
-            allCorrect = false;
-        }
-        // Lock options
-        block.querySelectorAll('input[type="radio"]').forEach(r => r.disabled = true);
     });
 
     if (!allAnswered) {
-        showQuizResult('Please answer all questions.', 'incorrect');
+        showQuizResult({ message: 'Please answer all questions.', type: 'warning' });
         return;
     }
 
-    if (allCorrect) {
-        showQuizResult('Great job! All answers are correct.', 'correct');
+    let correctCount = 0;
+    const totalQuestions = questionBlocks.length;
+
+    questionBlocks.forEach(block => {
+        block.querySelectorAll('.quiz-option').forEach(option => {
+            option.classList.remove('correct-choice', 'incorrect-choice', 'selected-choice');
+        });
+
+        const options = Array.from(block.querySelectorAll('input[type="radio"]'));
+        const selected = block.querySelector('input[type="radio"]:checked');
+        const correctOption = options.find(opt => opt.dataset.correct === 'true');
+
+        if (correctOption) {
+            const correctLabel = correctOption.closest('.quiz-option');
+            if (correctLabel) {
+                correctLabel.classList.add('correct-choice');
+            }
+        }
+
+        if (selected) {
+            const selectedLabel = selected.closest('.quiz-option');
+            if (selectedLabel) {
+                selectedLabel.classList.add('selected-choice');
+                if (selected.dataset.correct === 'true') {
+                    correctCount += 1;
+                    selectedLabel.classList.add('correct-choice');
+                } else {
+                    selectedLabel.classList.add('incorrect-choice');
+                }
+            }
+        }
+
+        options.forEach(opt => {
+            opt.disabled = true;
+        });
+    });
+
+    const scorePercent = Math.round((correctCount / totalQuestions) * 100);
+    let message;
+    let type;
+
+    if (scorePercent >= 70) {
+        message = 'Great job! You passed the knowledge check.';
+        type = 'correct';
+    } else if (scorePercent >= 60) {
+        message = 'Almost there. Review the material and try again.';
+        type = 'partial';
     } else {
-        showQuizResult('Some answers are incorrect. Review the material and try again.', 'incorrect');
+        message = 'Some answers are incorrect. Review the material and try again.';
+        type = 'incorrect';
     }
+
+    showQuizResult({
+        message,
+        type,
+        scorePercent,
+        correctCount,
+        totalQuestions
+    });
 
     elements.submitQuizButton.style.display = 'none';
 }
 
-function showQuizResult(message, type) {
-    elements.quizResult.textContent = message;
-    elements.quizResult.className = `quiz-result ${type}`;
-    elements.quizResult.style.display = 'block';
-    elements.quizResult.classList.add('fade-in');
+function showQuizResult({ message, type = 'info', scorePercent = null, correctCount = null, totalQuestions = null }) {
+    const resultEl = elements.quizResult;
+    if (!resultEl) return;
+
+    resultEl.innerHTML = '';
+
+    const messageEl = document.createElement('p');
+    messageEl.className = 'quiz-result-message';
+    messageEl.textContent = message;
+    resultEl.appendChild(messageEl);
+
+    if (scorePercent !== null && correctCount !== null && totalQuestions !== null) {
+        const clampedPercent = Math.min(100, Math.max(0, scorePercent));
+        const scoreLine = document.createElement('p');
+        scoreLine.className = 'quiz-result-score';
+        scoreLine.textContent = `Score: ${clampedPercent}% (${correctCount}/${totalQuestions} correct)`;
+        resultEl.appendChild(scoreLine);
+
+        const bar = document.createElement('div');
+        bar.className = 'quiz-score-bar';
+        const fill = document.createElement('div');
+        fill.className = 'quiz-score-bar-fill';
+        fill.style.width = `${clampedPercent}%`;
+
+        if (type === 'correct') {
+            fill.classList.add('pass');
+        } else if (type === 'partial' || type === 'warning') {
+            fill.classList.add('partial');
+        } else if (type === 'incorrect') {
+            fill.classList.add('fail');
+        } else {
+            fill.classList.add('neutral');
+        }
+
+        bar.appendChild(fill);
+        resultEl.appendChild(bar);
+    }
+
+    resultEl.className = `quiz-result ${type}`;
+    resultEl.style.display = 'block';
+    resultEl.classList.add('fade-in');
 }
 
 // Fetch quiz data from API (with graceful fallback if unavailable)

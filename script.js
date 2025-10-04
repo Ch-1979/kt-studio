@@ -876,7 +876,7 @@ function updateScene(index, options = {}) {
         elements.sceneBadge.textContent = 'Welcome';
         elements.sceneBadge.classList.remove('hidden');
         elements.sceneTitle.textContent = 'Your AI storyboard will appear here';
-        elements.sceneText.textContent = 'Upload a KT document to generate scenes, narration, and a quiz tailored to your content. Once processing finishes, the full storyboard will play in this space.';
+    elements.sceneText.textContent = 'Upload a KT document to generate a video and a quiz tailored to your content. Once processing finishes, the full storyboard will play in this space.';
         elements.sceneKeywords.innerHTML = '';
         elements.sceneIndex.textContent = '0';
         elements.sceneCount.textContent = '0';

@@ -154,8 +154,40 @@ public class ProcessKTDocument
             .Select(p => p.Trim())
             .Where(p => p.Length > 25)
             .Distinct()
-            .Take(5)
+            .Take(8)
             .ToList();
+
+        if (paragraphs.Count < 5 && paragraphs.Count > 0)
+        {
+            var expanded = new List<string>(paragraphs);
+            foreach (var paragraph in paragraphs)
+            {
+                if (expanded.Count >= 5)
+                {
+                    break;
+                }
+
+                if (paragraph.Length > 120)
+                {
+                    var midpoint = paragraph.Length / 2;
+                    var splitIndex = paragraph.IndexOf('.', midpoint);
+                    if (splitIndex <= 0)
+                    {
+                        splitIndex = paragraph.IndexOf(',', midpoint);
+                    }
+                    if (splitIndex > 60 && splitIndex < paragraph.Length - 40)
+                    {
+                        var first = paragraph[..(splitIndex + 1)].Trim();
+                        var second = paragraph[(splitIndex + 1)..].Trim();
+                        if (!string.IsNullOrWhiteSpace(first)) expanded.Add(first);
+                        if (expanded.Count >= 5) break;
+                        if (!string.IsNullOrWhiteSpace(second)) expanded.Add(second);
+                    }
+                }
+            }
+
+            paragraphs = expanded.Distinct().Take(8).ToList();
+        }
 
         if (paragraphs.Count == 0)
         {
@@ -165,7 +197,15 @@ public class ProcessKTDocument
         var summarySource = paragraphs.First();
         var summary = summarySource.Length > 160 ? summarySource[..160] + "..." : summarySource;
 
-        var scenes = paragraphs.Select((text, idx) => SceneData.FromFallback(text, idx)).ToList();
+        if (paragraphs.Count < 5)
+        {
+            while (paragraphs.Count < 5)
+            {
+                paragraphs.Add(summarySource);
+            }
+        }
+
+        var scenes = paragraphs.Take(8).Select((text, idx) => SceneData.FromFallback(text, idx)).ToList();
 
         var quiz = new List<QuizQuestion>
         {
@@ -373,7 +413,7 @@ Full context (trimmed to 6k characters):
 
 Deliverables:
 1. Provide a summary (≤220 characters) that captures the main purpose of the document.
-2. Produce 3-6 storyboard scenes covering distinct concepts. Each scene needs a short title and narration grounded in the context.
+2. Produce 5-8 storyboard scenes covering distinct concepts. Each scene needs a short title and narration grounded in the context.
 3. Produce exactly 4 quiz questions that meet the requirements above.
 
 Return valid JSON matching the schema provided in the response_format. Do not include any extra commentary.";
@@ -648,8 +688,8 @@ Return valid JSON matching the schema provided in the response_format. Do not in
             ["scenes"] = new
             {
                 type = "array",
-                minItems = 3,
-                maxItems = 6,
+                minItems = 5,
+                maxItems = 8,
                 items = new
                 {
                     type = "object",

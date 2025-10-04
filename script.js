@@ -1,5 +1,5 @@
 // Storyboard playback configuration
-const MIN_SCENE_DURATION_SECONDS = 6;
+const MIN_SCENE_DURATION_SECONDS = 10;
 const MIN_TOTAL_RUNTIME_SECONDS = 60;
 const MAX_TOTAL_RUNTIME_SECONDS = 120;
 
@@ -15,8 +15,7 @@ let appState = {
     totalDurationSeconds: 0,
     elapsedSeconds: 0,
     sceneDurations: [],
-    sceneOffsets: [],
-    currentBeatIndex: 0
+    sceneOffsets: []
 };
 
 let videoScenes = []; // normalized scenes currently loaded into the player
@@ -509,13 +508,10 @@ function normalizeScenes(rawScenes, fallbackSummary) {
                 ? scene.keywords
                 : guessKeywords(text);
             const keywords = Array.from(new Set(rawKeywords.map(k => (k || '').toString().trim()).filter(Boolean)));
-            const beats = splitIntoBeats(text);
             return {
                 index: scene.index ?? idx + 1,
                 title,
                 text,
-                fullText: text,
-                beats,
                 keywords,
                 badge: scene.badge || null,
                 imageUrl: scene.imageUrl || scene.image_url || null,
@@ -530,13 +526,10 @@ function normalizeScenes(rawScenes, fallbackSummary) {
 
 function buildSceneFromText(text, idx) {
     const cleanText = typeof text === 'string' && text.trim().length ? text.trim() : 'Generated scene content pending.';
-    const beats = splitIntoBeats(cleanText);
     return {
         index: idx + 1,
         title: createTitleFromText(cleanText, idx),
         text: cleanText,
-        fullText: cleanText,
-        beats,
         keywords: guessKeywords(cleanText),
         badge: idx === 0 ? 'Overview' : null,
         imageUrl: null,
@@ -636,52 +629,6 @@ function countWords(text) {
         .length;
 }
 
-function splitIntoBeats(text) {
-    if (!text) return [''];
-    const cleaned = text.toString().replace(/\s+/g, ' ').trim();
-    if (!cleaned) return [''];
-
-    let sentences = cleaned.match(/[^.!?]+[.!?]?/g) || [];
-    sentences = sentences.map(sentence => sentence.trim()).filter(Boolean);
-
-    if (!sentences.length) {
-        sentences = cleaned.split(/,\s+/).map(part => part.trim()).filter(Boolean);
-    }
-
-    if (!sentences.length) {
-        sentences = [cleaned];
-    }
-
-    const maxBeats = 6;
-    while (sentences.length > maxBeats) {
-        const merged = [];
-        for (let i = 0; i < sentences.length; i += 2) {
-            if (i + 1 < sentences.length) {
-                merged.push(`${sentences[i]} ${sentences[i + 1]}`.trim());
-            } else {
-                merged.push(sentences[i]);
-            }
-        }
-        sentences = merged;
-    }
-
-    return sentences.length ? sentences : [cleaned];
-}
-
-function escapeHtml(str) {
-    if (str === null || str === undefined) return '';
-    return String(str).replace(/[&<>"']/g, char => {
-        switch (char) {
-            case '&': return '&amp;';
-            case '<': return '&lt;';
-            case '>': return '&gt;';
-            case '"': return '&quot;';
-            case "'": return '&#39;';
-            default: return char;
-        }
-    });
-}
-
 function getSceneStartTime(index) {
     if (!Array.isArray(appState.sceneOffsets) || !appState.sceneOffsets.length) {
         const perScene = appState.totalDurationSeconds / Math.max(videoScenes.length, 1);
@@ -689,18 +636,6 @@ function getSceneStartTime(index) {
     }
     const safeIndex = Math.min(Math.max(index, 0), appState.sceneOffsets.length - 1);
     return appState.sceneOffsets[safeIndex] ?? 0;
-}
-
-function getSceneDuration(index) {
-    if (Array.isArray(appState.sceneDurations) && appState.sceneDurations.length) {
-        const safeIndex = Math.min(Math.max(index, 0), appState.sceneDurations.length - 1);
-        const duration = appState.sceneDurations[safeIndex];
-        if (Number.isFinite(duration) && duration > 0) {
-            return duration;
-        }
-    }
-    const perScene = appState.totalDurationSeconds / Math.max(videoScenes.length, 1);
-    return Math.max(MIN_SCENE_DURATION_SECONDS, Number.isFinite(perScene) && perScene > 0 ? perScene : MIN_SCENE_DURATION_SECONDS);
 }
 
 function getSceneIndexForElapsed(elapsed) {
@@ -719,25 +654,6 @@ function getSceneIndexForElapsed(elapsed) {
     }
 
     return appState.sceneDurations.length - 1;
-}
-
-function getBeatIndex(sceneElapsed, sceneIndex, sceneDuration) {
-    const scene = videoScenes[sceneIndex];
-    const beats = Array.isArray(scene?.beats) && scene.beats.length ? scene.beats : [scene?.fullText || scene?.text || ''];
-    if (!sceneDuration || !Number.isFinite(sceneDuration) || sceneDuration <= 0) {
-        return 0;
-    }
-    if (beats.length <= 1) {
-        return 0;
-    }
-
-    const beatDuration = sceneDuration / beats.length;
-    if (!Number.isFinite(beatDuration) || beatDuration <= 0) {
-        return 0;
-    }
-
-    const rawIndex = Math.floor(sceneElapsed / beatDuration);
-    return Math.max(0, Math.min(beats.length - 1, rawIndex));
 }
 
 function setElapsedSeconds(seconds, options = {}) {
@@ -769,19 +685,6 @@ function setElapsedSeconds(seconds, options = {}) {
             highlightSceneIndicator(nextIndex);
         }
     }
-
-    const activeIndex = appState.currentSceneIndex;
-    const activeScene = videoScenes[activeIndex];
-    if (activeScene) {
-        const sceneStart = getSceneStartTime(activeIndex);
-        const sceneDuration = getSceneDuration(activeIndex);
-        const sceneElapsed = Math.min(Math.max(clamped - sceneStart, 0), sceneDuration);
-        const beatIndex = getBeatIndex(sceneElapsed, activeIndex, sceneDuration);
-        if (beatIndex !== appState.currentBeatIndex || options.forceBeatUpdate) {
-            appState.currentBeatIndex = beatIndex;
-            renderSceneNarration(activeScene, beatIndex, { skipScroll: options.skipScroll });
-        }
-    }
 }
 
 function updateScene(index) {
@@ -801,7 +704,6 @@ function updateScene(index) {
     const scene = videoScenes[safeIndex];
 
     appState.currentSceneIndex = safeIndex;
-    appState.currentBeatIndex = 0;
         if (scene.imageUrl) {
             elements.sceneBackdrop.style.backgroundImage = `linear-gradient(160deg, rgba(15,23,42,0.15) 10%, rgba(15,23,42,0.9) 70%), url('${scene.imageUrl}')`;
             elements.sceneBackdrop.style.backgroundSize = 'cover';
@@ -823,7 +725,7 @@ function updateScene(index) {
         elements.sceneBadge.textContent = badgeLabel;
         elements.sceneBadge.classList.toggle('hidden', !badgeLabel);
     elements.sceneTitle.textContent = scene.title;
-    renderSceneNarration(scene, 0, { force: true });
+    elements.sceneText.textContent = scene.text;
     renderSceneKeywords(scene.keywords);
     elements.sceneIndex.textContent = scene.index ?? safeIndex + 1;
     elements.sceneCount.textContent = videoScenes.length;
@@ -856,31 +758,6 @@ function renderSceneIndicators() {
         elements.sceneIndicatorRow.appendChild(dot);
     });
     highlightSceneIndicator(appState.currentSceneIndex);
-}
-
-function renderSceneNarration(scene, beatIndex, options = {}) {
-    if (!elements.sceneText) return;
-    const beats = Array.isArray(scene?.beats) && scene.beats.length ? scene.beats : [scene?.fullText || scene?.text || ''];
-    const safeIndex = Math.min(Math.max(Number.isFinite(beatIndex) ? beatIndex : 0, 0), beats.length - 1);
-    const escapedBeats = beats.map(escapeHtml);
-
-    const past = escapedBeats.slice(0, safeIndex).join(' ');
-    const current = escapedBeats[safeIndex] || '';
-    const upcoming = escapedBeats.slice(safeIndex + 1).join(' ');
-
-    const html = [
-        past ? `<span class="scene-beat past">${past}</span>` : '',
-        current ? `<span class="scene-beat current">${current}</span>` : '',
-        upcoming ? `<span class="scene-beat upcoming">${upcoming}</span>` : ''
-    ].filter(Boolean).join(' ');
-
-    elements.sceneText.innerHTML = html || escapeHtml(scene?.fullText || scene?.text || '');
-
-    if (options.force) {
-        elements.sceneText.scrollTop = 0;
-    } else if (!options.skipScroll && elements.sceneText.scrollHeight > elements.sceneText.clientHeight) {
-        elements.sceneText.scrollTop = elements.sceneText.scrollHeight - elements.sceneText.clientHeight;
-    }
 }
 
 function highlightSceneIndicator(index) {

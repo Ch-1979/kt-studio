@@ -350,10 +350,9 @@ body {
     color: rgba(226, 232, 240, 0.95);
 }
 
+
 .scene-keywords {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    display: none;
 }
 
 .scene-keywords span {
@@ -454,17 +453,11 @@ body {
 }
 
 .scene-counter {
-    margin-left: auto;
-    font-size: 13px;
-    color: rgba(226, 232, 240, 0.8);
-    font-weight: 500;
+    display: none;
 }
 
 .scene-indicators {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
+    display: none;
 }
 
 .scene-indicator {

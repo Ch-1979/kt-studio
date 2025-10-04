@@ -591,15 +591,11 @@ function updateScene(index, options = {}) {
 }
 
 function renderSceneKeywords(keywords) {
+    if (!elements.sceneKeywords) {
+        return;
+    }
     elements.sceneKeywords.innerHTML = '';
-    if (!Array.isArray(keywords) || !keywords.length) return;
-    keywords.slice(0, 5).forEach(word => {
-        const cleaned = (word || '').toString().trim();
-        if (!cleaned) return;
-        const chip = document.createElement('span');
-        chip.textContent = cleaned.startsWith('#') ? cleaned : `#${cleaned}`;
-        elements.sceneKeywords.appendChild(chip);
-    });
+    elements.sceneKeywords.style.display = 'none';
 }
 
 function renderSceneIndicators() {

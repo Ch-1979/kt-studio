@@ -578,7 +578,7 @@ function ensureChatbotGreeting() {
     chatbotState.hasGreeted = true;
 }
 
-function appendChatbotMessage(role, text, sources) {
+function appendChatbotMessage(role, text, sources, meta = {}) {
     if (!chatbotElements.messages) return;
     if (chatbotElements.panel) {
         chatbotElements.panel.classList.remove('empty');
@@ -591,6 +591,15 @@ function appendChatbotMessage(role, text, sources) {
     const bubble = document.createElement('div');
     bubble.className = 'chat-bubble';
     appendTextAsParagraphs(bubble, text);
+
+    if (safeRole === 'assistant' && meta.error) {
+        const errorNote = document.createElement('div');
+        errorNote.style.marginTop = '8px';
+        errorNote.style.fontSize = '12px';
+        errorNote.style.color = '#b91c1c';
+        errorNote.textContent = meta.error;
+        bubble.appendChild(errorNote);
+    }
 
     if (safeRole === 'assistant' && Array.isArray(sources) && sources.length) {
         const sourcesBlock = document.createElement('div');
@@ -733,8 +742,8 @@ async function sendChatbotMessage() {
 
         const payload = await response.json();
         const answer = payload.answer || "I'm not sure how to answer that right now.";
-        appendChatbotMessage('assistant', answer, payload.sources);
-        appState.chatHistory.push({ role: 'assistant', message: answer, timestamp: Date.now(), sources: payload.sources });
+    appendChatbotMessage('assistant', answer, payload.sources, { error: payload.error });
+    appState.chatHistory.push({ role: 'assistant', message: answer, timestamp: Date.now(), sources: payload.sources, error: payload.error });
     } catch (error) {
         console.error('Chatbot request failed', error);
         appendChatbotMessage('assistant', "I couldn't reach the knowledge base right now. Please try again in a moment.");

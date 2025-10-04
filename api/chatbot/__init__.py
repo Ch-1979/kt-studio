@@ -58,21 +58,47 @@ def _build_context_text(video: dict, quiz: dict, max_chars: int = 6000) -> str:
     return shorten(context, width=max_chars, placeholder="\n…")
 
 
-def _call_azure_openai(question: str, context: str) -> str | None:
-    endpoint = _get_env("AzureOpenAI:Endpoint", "AzureOpenAI__Endpoint", "AZURE_OPENAI_ENDPOINT")
-    api_key = _get_env("AzureOpenAI:ApiKey", "AzureOpenAI__ApiKey", "AZURE_OPENAI_KEY")
+def _call_azure_openai(question: str, context: str) -> tuple[str | None, str | None]:
+    endpoint = _get_env(
+        "AzureOpenAI:Endpoint",
+        "AzureOpenAI__Endpoint",
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_RESOURCE_ENDPOINT",
+    )
+    api_key = _get_env(
+        "AzureOpenAI:ApiKey",
+        "AzureOpenAI__ApiKey",
+        "AZURE_OPENAI_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "OPENAI_API_KEY",
+    )
     deployment = _get_env(
         "AzureOpenAI:ChatDeployment",
         "AzureOpenAI__ChatDeployment",
         "AzureOpenAI:Deployment",
         "AzureOpenAI__Deployment",
         "AZURE_OPENAI_DEPLOYMENT",
+        "AZURE_OPENAI_CHAT_DEPLOYMENT",
+        "AZURE_OPENAI_MODEL",
+        "AZURE_OPENAI_CHAT_MODEL",
+        "AzureOpenAI:ChatModel",
+        "AzureOpenAI__ChatModel",
     )
-    api_version = _get_env("AzureOpenAI:ApiVersion", "AzureOpenAI__ApiVersion", "AZURE_OPENAI_API_VERSION") or DEFAULT_API_VERSION
+    api_version = (
+        _get_env(
+            "AzureOpenAI:ApiVersion",
+            "AzureOpenAI__ApiVersion",
+            "AzureOpenAI:ChatApiVersion",
+            "AzureOpenAI__ChatApiVersion",
+            "AZURE_OPENAI_API_VERSION",
+            "AZURE_OPENAI_CHAT_API_VERSION",
+        )
+        or DEFAULT_API_VERSION
+    )
 
     if not endpoint or not api_key or not deployment:
         logging.warning("[chatbot] Missing Azure OpenAI configuration.")
-        return None
+        return None, "Azure OpenAI configuration is incomplete."
 
     base_uri = endpoint.rstrip("/")
     url = f"{base_uri}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
@@ -104,17 +130,20 @@ def _call_azure_openai(question: str, context: str) -> str | None:
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=30)
         if response.status_code >= 400:
-            logging.warning("[chatbot] Azure OpenAI error %s: %s", response.status_code, response.text[:200])
-            return None
+            detail = response.text[:400] if response.text else ""
+            logging.warning("[chatbot] Azure OpenAI error %s: %s", response.status_code, detail)
+            return None, f"Azure OpenAI returned HTTP {response.status_code}. {detail}"
         data = response.json()
         choices = data.get("choices") or []
         if not choices:
-            return None
+            return None, "Azure OpenAI response did not contain any choices."
         message = choices[0].get("message", {}).get("content")
-        return message
+        if not message:
+            return None, "Azure OpenAI response did not include message content."
+        return message, None
     except requests.RequestException as exc:
         logging.warning("[chatbot] Azure OpenAI request failed: %s", exc)
-        return None
+        return None, f"Request to Azure OpenAI failed: {exc}"
 
 
 def _format_sources(video: dict) -> list[dict]:
@@ -156,7 +185,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:  # type: ignore
 
     video, quiz = _load_context(doc_name)
     context = _build_context_text(video, quiz)
-    answer = _call_azure_openai(question, context)
+    answer, error_reason = _call_azure_openai(question, context)
 
     if not answer:
         fallback = video.get("summary") or "I couldn't retrieve enough context to answer that."
@@ -168,6 +197,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:  # type: ignore
     payload = {
         "answer": answer,
         "sources": _format_sources(video),
+        "error": error_reason,
     }
 
     return func.HttpResponse(json.dumps(payload), status_code=200, mimetype="application/json")

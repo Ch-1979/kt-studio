@@ -36,6 +36,8 @@ AzureOpenAI:ApiKey          = <api-key>
 AzureOpenAI:Deployment      = gpt-4o-mini       # chat completion that returns storyboard JSON
 AzureOpenAI:ChatDeployment  = gpt-4o-mini       # optional override for chatbot responses (defaults to Deployment)
 AzureOpenAI:ImageDeployment = dall-e-3          # optional image deployment (omit to skip art)
+
+> ℹ️ Environment keys support multiple naming conventions (`AzureOpenAI:ApiKey`, `AzureOpenAI__ApiKey`, `AZURE_OPENAI_API_KEY`, etc.), so bring your preferred style—just make sure endpoint, API key, deployment name, and API version are populated.
 ```
 
 The Python Functions rely on `AzureWebJobsStorage`, which Static Web Apps wires automatically.

@@ -574,7 +574,7 @@ function closeChatbot() {
 
 function ensureChatbotGreeting() {
     if (chatbotState.hasGreeted) return;
-    appendChatbotMessage('assistant', "Hi! I'm KT Copilot. Load or select a KT document and I'll answer questions using its storyboard and quiz context.");
+    appendChatbotMessage('assistant', "Hi! I'm your Q&A bot. Load or select a KT document and I'll answer questions using its storyboard and quiz context.");
     chatbotState.hasGreeted = true;
 }
 
@@ -650,7 +650,7 @@ function updateChatbotContext() {
 
     if (docName && chatbotState.hasGreeted && docName !== chatbotState.lastDocName) {
         const announcementName = friendlyDocName || docName;
-        appendChatbotMessage('assistant', `Context is ready for ${announcementName}. Ask me anything about this KT package for quick answers.`);
+    appendChatbotMessage('assistant', `Context is ready for ${announcementName}. Ask me anything about this KT package for quick answers.`);
     }
 
     chatbotState.lastDocName = docName || null;

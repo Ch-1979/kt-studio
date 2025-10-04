@@ -1052,6 +1052,18 @@ function runDemo() {
 
 // Keyboard shortcuts
 document.addEventListener('keydown', function(event) {
+    const targetEl = event.target;
+    const isTypingContext =
+        targetEl && (
+            (targetEl.tagName === 'INPUT' && targetEl.type !== 'range') ||
+            targetEl.tagName === 'TEXTAREA' ||
+            targetEl.isContentEditable
+        );
+
+    if (isTypingContext) {
+        return;
+    }
+
     // Space bar to play/pause video (when video section is active)
     if (event.code === 'Space' && appState.isVideoReady) {
         event.preventDefault();

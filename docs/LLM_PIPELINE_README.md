@@ -1,68 +1,58 @@
-# LLM-Orchestrated Storyboard Pipeline
+# Storyboard Generation Pipeline
 
 ## Overview
-This document describes the production prompt-generation pipeline introduced in October 2025. The Azure Functions backend now processes every uploaded document end-to-end through Azure OpenAI. There are no deterministic fallbacks; if the document cannot be extracted or the LLM cannot produce compliant JSON, processing fails fast and surfaces the error in logs.
+`ProcessKTDocument` is a .NET 8 isolated Azure Function that reacts to new blobs in `uploaded-docs` and produces two JSON artifacts:
 
-## High-Level Flow
-1. **Blob Trigger / Manual Invocation** – `ProcessKTDocument` reacts to uploads or on-demand replays.
-2. **Document Extraction** – `DocumentContentExtractor` normalizes the uploaded payload, detects binary files, splits it into ~3.5k-character segments, and records word/token counts.
-3. **Generation Spec** – Word count drives target scene/quiz counts (3–6 scenes, 3–6 quiz questions).
-4. **LLM Orchestration** – `GenerateStoryboardWithAzureOpenAi` sends the full segmented document to Azure OpenAI (chat completions with JSON schema enforcement). The system message requires:
-   - exact scene/quiz counts
-   - non-empty narration and `visualPrompt`
-   - explicit error JSON if the document cannot be honored
-5. **Validation** – `ValidateGenerationResult` ensures summary, scenes, and quiz items are present, counts match the spec, each scene has a `visualPrompt`, and each quiz has exactly four options. Any violation raises `StoryboardGenerationException`.
-6. **Style Application** – `DetermineVideoStyle` plus `SceneData.ApplyStyle` enrich scene prompts with motion/lighting cues without overriding the LLM’s context.
-7. **Video Submission** – `GenerateVideoAssetAsync` packages the cinematic instructions and submits the prompt to Azure OpenAI Video (Sora-compatible preview API). The selected style metadata is persisted in the manifest.
-8. **Artifacts** – On success, the function writes `{document}.video.json` and `{document}.quiz.json`. On failure, the Azure Function run fails (no JSON emitted), prompting investigation.
+- `<doc>.video.json` – contains the document summary plus a list of scenes (title, narration, keywords, optional artwork links).
+- `<doc>.quiz.json` – multiple-choice questions with correct answers and explanations when available.
 
-## Key Components
-| Component | Responsibility |
-|-----------|----------------|
-| `DocumentContentExtractor` | Validates text payloads, collapses whitespace, segments into LLM-sized chunks, and emits metadata for logging. Detects binary/unsupported formats and throws. |
-| `GenerateStoryboardWithAzureOpenAi` | Constructs the chat payload, sends the complete document (segmented) to the configured deployment, and throws on any HTTP or schema failure. |
-| `ValidateGenerationResult` | Applies business rules to the parsed JSON to guarantee fully-populated scenes and quiz items. |
-| `SceneData.ApplyStyle` | Augments LLM-provided `visualPrompt` strings with the selected cinematic style without introducing fallbacks. |
-| `VideoAsset.Success` | Captures prompt + style telemetry for downstream observability.
+The implementation favors resiliency: if Azure OpenAI cannot return compliant JSON, the function falls back to a heuristic summarizer so the frontend still receives a usable storyboard and quiz.
 
-## Error Handling
-- **Extraction problems** (`DocumentExtractionException`) – raised when the document is empty, binary, or otherwise unreadable. Logged and rethrown; the Azure Function invocation fails.
-- **LLM failures** (`StoryboardGenerationException`) – include HTTP errors, invalid JSON, missing fields, or count mismatches. These stop processing; no deterministic prompts are produced.
-- **Video generation issues** (`VideoGenerationException`) – handled separately when Sora/video preview returns issues; manifests record the error while preserving storyboard outputs.
+## Flow Summary
+1. **Trigger** – Blob upload (or manual requeue via the Python API).
+2. **Document read** – The blob body is retrieved as UTF‑8 text.
+3. **LLM request** – If `AzureOpenAI:Endpoint`, `:ApiKey`, and `:Deployment` are configured, the function calls the chat completion API with a JSON-schema constrained prompt.
+4. **Fallback** – When the LLM call fails or returns unusable data, a deterministic fallback builds three scenes and baseline quiz questions from the document text.
+5. **Scene imagery (optional)** – If `AzureOpenAI:ImageDeployment` is set, each scene receives a prompt for image generation (DALL·E 3 / `gpt-image-1`). The resulting PNGs are stored in `storyboard-images` with SAS URLs returned in the manifest.
+6. **Persistence** – Storyboard JSON is written to `generated-videos`; quiz JSON goes to `quiz-data`.
 
-## Telemetry
-- Extraction logs: document name, word count, segment count, estimated tokens.
-- LLM submission logs: deployment name, payload length, request duration.
-- Validation logs: scene/quiz counts post-validation.
-- Style logs: chosen visual style, motion, lighting, and avoid directives.
+## Key Types
+| Type | Purpose |
+|------|---------|
+| `GenerationResult` | Maps the Azure OpenAI response (`summary`, `scenes`, `quiz`). |
+| `SceneData` | Normalizes scene attributes, guesses keywords, handles fallback prompt creation. |
+| `QuizQuestion` | Ensures four options per question and clamps the correct answer index. |
+
+## Error Handling & Logging
+- Azure OpenAI failures are logged and trigger fallback generation instead of failing the run.
+- Image generation issues are logged per scene but do not abort processing.
+- Any unhandled exception is logged and rethrown so the Functions runtime records a failed invocation.
 
 ## Configuration Checklist
 | Setting | Description |
 |---------|-------------|
-| `AzureOpenAI__Endpoint` / `AzureOpenAI__ApiKey` | Base endpoint + API key for Azure OpenAI. |
-| `AzureOpenAI__Deployment` | Deployment name for the chat model returning storyboard JSON. |
-| `AzureOpenAI__ImageDeployment` | Optional image model for per-scene thumbnail generation. |
-| `AzureOpenAI__VideoDeployment` | Sora-compatible video generation deployment. |
-| `AzureWebJobsStorage` | Connection string for blob storage.
+| `AzureOpenAI:Endpoint` / `AzureOpenAI__Endpoint` | Base endpoint for Azure OpenAI. |
+| `AzureOpenAI:ApiKey` / `AzureOpenAI__ApiKey` | API key for the chosen resource. |
+| `AzureOpenAI:Deployment` / `AzureOpenAI__Deployment` | Chat model that returns storyboard JSON. |
+| `AzureOpenAI:ImageDeployment` / `AzureOpenAI__ImageDeployment` | Optional image model name. |
+| `AzureWebJobsStorage` | Storage connection string shared with the blob trigger. |
 
-All three OpenAI settings must be present; missing values now raise `StoryboardGenerationException` and prevent fallback behavior.
+Only the chat deployment is required; image generation is optional.
 
 ## Prompt Structure
-- **System message** – Sets the contract (exact counts, JSON schema, explicit error JSON on failure).
-- **User message** – Provides document metadata plus every segment in order, bounded by `--- SEGMENT n START/END ---`, and reiterates the contract to avoid markdown wrappers.
+- **System message** – Directs the model to act as an Azure learning consultant and to emit JSON following the supplied schema.
+- **User message** – Wraps the truncated document content between `SOURCE DOCUMENT BEGIN/END` markers.
+- **Response format** – Uses `json_schema` to enforce a predictable contract.
 
-## Validation Rules
-1. Summary must be non-empty.
-2. Scene count ≥ target and each scene includes populated `title`, `narration`, and `visualPrompt`.
-3. Quiz count ≥ target with exactly four options per question.
-4. Any schema deviation results in immediate failure; there is no retry with deterministic prompts.
-
-## Deployment Notes
-- The build marker `RebindMarker_2025-10-02T09:55Z` forces Azure to pick up deployments.
-- Without the .NET SDK locally, run builds via CI to ensure type safety.
-- Monitor Application Insights for the new error classes to track extraction vs. LLM failures.
+## Fallback Heuristics
+When no valid LLM response is available, the function:
+- Extracts up to five distinct paragraphs longer than 25 characters.
+- Uses the first paragraph to craft the summary.
+- Builds scenes by titling and tagging each paragraph.
+- Emits three quiz questions (topic, count of major concepts, Azure service powering the storyboard).
 
 ## Future Enhancements
-- Support for PDF/DOCX extraction via Azure Document Intelligence (current release stops at detection).
-- Streaming chunk summarization to reduce token footprint for extremely long documents.
-- Automatic retries with alternative instructions before failing, while still avoiding deterministic fallbacks.
+- Swap the naïve text extraction with Azure Document Intelligence for richer PDFs/DOCX files.
+- Persist processing metadata (timestamps, failure reasons) for observability.
+- Allow configurable target scene counts per document type.
+- Add automated replays when the LLM response fails validation instead of falling back immediately.

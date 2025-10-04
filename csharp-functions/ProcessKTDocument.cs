@@ -96,13 +96,31 @@ public class ProcessKTDocument
         var apiKey = _config["AzureOpenAI:ApiKey"] ?? _config["AzureOpenAI__ApiKey"];
         var deployment = _config["AzureOpenAI:Deployment"] ?? _config["AzureOpenAI__Deployment"];
 
+        DocumentExtractionResult? extraction = null;
+        try
+        {
+            var extractor = new DocumentContentExtractor();
+            extraction = extractor.Extract(docName, documentText, null, _logger);
+        }
+        catch (DocumentExtractionException dex)
+        {
+            _logger.LogWarning(dex, "[ProcessKTDocument] Unable to normalize document {Document}; proceeding with raw text.", docName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ProcessKTDocument] Unexpected error while preparing document {Document}; proceeding with raw text.", docName);
+        }
+
+        var normalizedText = extraction?.FullText ?? documentText;
+        var promptSegments = extraction?.Segments;
+
         GenerationResult? generated = null;
 
         if (!string.IsNullOrWhiteSpace(endpoint) && !string.IsNullOrWhiteSpace(apiKey) && !string.IsNullOrWhiteSpace(deployment))
         {
             try
             {
-                generated = await TryGenerateWithAzureOpenAi(endpoint, apiKey, deployment, documentText);
+                generated = await TryGenerateWithAzureOpenAi(endpoint, apiKey, deployment, normalizedText, promptSegments, docName);
             }
             catch (Exception ex)
             {
@@ -122,7 +140,7 @@ public class ProcessKTDocument
         }
         else
         {
-            (summary, scenes, quiz) = BuildFallbackContent(documentText);
+            (summary, scenes, quiz) = BuildFallbackContent(normalizedText);
         }
 
         await PopulateSceneImagesAsync(docName, scenes);
@@ -310,15 +328,61 @@ public class ProcessKTDocument
         return blob.Uri.ToString();
     }
 
-    private async Task<GenerationResult?> TryGenerateWithAzureOpenAi(string endpoint, string apiKey, string deployment, string documentText)
+    private async Task<GenerationResult?> TryGenerateWithAzureOpenAi(
+        string endpoint,
+        string apiKey,
+        string deployment,
+        string documentText,
+        IReadOnlyList<string>? segments,
+        string documentName)
     {
         var baseUri = endpoint.EndsWith('/') ? endpoint : endpoint + "/";
         var requestUri = new Uri(new Uri(baseUri), $"openai/deployments/{deployment}/chat/completions?api-version=2024-08-01-preview");
 
+        var excerpts = new List<string>();
+        if (segments != null)
+        {
+            foreach (var segment in segments.Where(s => !string.IsNullOrWhiteSpace(s)).Take(6))
+            {
+                var trimmed = segment.Trim();
+                if (string.IsNullOrWhiteSpace(trimmed)) continue;
+                excerpts.Add(Truncate(trimmed, 700));
+            }
+        }
+
+        if (excerpts.Count == 0)
+        {
+            excerpts.Add(Truncate(documentText, 900));
+        }
+
+        var excerptBlock = string.Join("\n\n", excerpts.Select((content, idx) => $"Excerpt {idx + 1}:\n{content}"));
+        var limitedContext = Truncate(documentText, 6000);
+
+        const string systemPrompt = "You are an instructional designer who turns enterprise knowledge-transfer documents into concise storyboards and rigorous multiple-choice quizzes. Base every output strictly on the supplied source excerpts. Avoid speculation, generic trivia, or outside knowledge.";
+
+        const string rubricPrompt = "Quiz requirements:\n- Write exactly four multiple-choice questions.\n- Each question must focus on a single fact, process step, or definition taken directly from the document.\n- Use wording from the context verbatim or as a faithful paraphrase.\n- Provide four answer options: one correct answer, three plausible distractors that conflict with the source material.\n- Include a short explanation referencing the specific excerpt that proves the answer.";
+
+        var userPrompt = $@"Document title: {documentName}
+
+Use these curated excerpts to understand the content:
+
+{excerptBlock}
+
+Full context (trimmed to 6k characters):
+{limitedContext}
+
+Deliverables:
+1. Provide a summary (≤220 characters) that captures the main purpose of the document.
+2. Produce 3-6 storyboard scenes covering distinct concepts. Each scene needs a short title and narration grounded in the context.
+3. Produce exactly 4 quiz questions that meet the requirements above.
+
+Return valid JSON matching the schema provided in the response_format. Do not include any extra commentary.";
+
         var payload = new
         {
-            temperature = 0.35,
-            max_tokens = 1200,
+            temperature = 0.2,
+            top_p = 0.85,
+            max_tokens = 1400,
             response_format = new
             {
                 type = "json_schema",
@@ -330,16 +394,9 @@ public class ProcessKTDocument
             },
             messages = new object[]
             {
-                new
-                {
-                    role = "system",
-                    content = "You are an Azure learning consultant. Produce engaging storyboards and quizzes derived from source text."
-                },
-                new
-                {
-                    role = "user",
-                    content = $"SOURCE DOCUMENT BEGIN\n{Truncate(documentText, 6000)}\nSOURCE DOCUMENT END"
-                }
+                new { role = "system", content = systemPrompt },
+                new { role = "system", content = rubricPrompt },
+                new { role = "user", content = userPrompt }
             }
         };
 

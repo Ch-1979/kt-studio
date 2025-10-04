@@ -1,6 +1,5 @@
 // Storyboard playback configuration
-// Single video mode: no storyboard scene stepping
-const SCENE_DURATION_SECONDS = 8; // retained for fallback timing only
+const SCENE_DURATION_SECONDS = 8; // default duration per scene when animating
 
 // Global state management
 let appState = {
@@ -16,8 +15,6 @@ let appState = {
 
 let videoScenes = []; // normalized scenes currently loaded into the player
 let playbackInterval = null; // interval handle for autoplay
-let videoAsset = null; // current generated video asset (Sora output)
-let videoListenersAttached = false;
 
 // DOM elements
 const elements = {
@@ -45,36 +42,17 @@ const elements = {
     playPauseButton: document.getElementById('playPauseButton'),
     currentTime: document.getElementById('currentTime'),
     totalTime: document.getElementById('totalTime'),
-    // Removed scene navigation & indicators
-    storyboardVideo: document.getElementById('storyboardVideo'),
-    videoControls: document.querySelector('.video-controls'),
-    videoDiagnosticsPanel: document.getElementById('videoDiagnosticsPanel'),
-    videoDiagStatus: document.getElementById('videoDiagStatus'),
-    videoDiagContentType: document.getElementById('videoDiagContentType'),
-    videoDiagBytes: document.getElementById('videoDiagBytes'),
-    videoDiagFourcc: document.getElementById('videoDiagFourcc'),
-    videoDiagMajor: document.getElementById('videoDiagMajor'),
-    videoDiagEvents: document.getElementById('videoDiagEvents'),
-    videoDiagDetails: document.getElementById('videoDiagDetails'),
-    openVideoButton: document.getElementById('openVideoButton'),
-    copyVideoUrlButton: document.getElementById('copyVideoUrlButton'),
+    prevSceneButton: document.getElementById('prevSceneButton'),
+    nextSceneButton: document.getElementById('nextSceneButton'),
+    sceneIndex: document.getElementById('sceneIndex'),
+    sceneCount: document.getElementById('sceneCount'),
+    sceneIndicatorRow: document.getElementById('sceneIndicatorRow'),
     
     // Quiz section
     quizQuestions: document.getElementById('quizQuestions'),
     activeQuiz: document.getElementById('activeQuiz'),
     submitQuizButton: document.getElementById('submitQuizButton'),
-    quizResult: document.getElementById('quizResult'),
-
-    // Chatbot
-    chatMessages: document.getElementById('chatMessages'),
-    chatInput: document.getElementById('chatInput'),
-    chatForm: document.getElementById('chatForm'),
-    chatStatus: document.getElementById('chatStatus'),
-    chatDocSelect: document.getElementById('chatDocSelect'),
-    chatRefreshButton: document.getElementById('chatRefreshButton'),
-    chatPanel: document.getElementById('chatPanel'),
-    chatToggleButton: document.getElementById('chatToggleButton'),
-    chatCloseButton: document.getElementById('chatCloseButton')
+    quizResult: document.getElementById('quizResult')
 };
 
 // Newly added elements for processed documents
@@ -87,20 +65,11 @@ const processedElements = {
 
 let loadedVideoData = null; // stores currently loaded generated video JSON
 let loadedQuizData = null;  // stores currently loaded generated quiz JSON
-const videoEventLog = [];
-const chatState = {
-    history: [],
-    selectedDoc: '',
-    isLoading: false
-};
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
     initializeEventListeners();
-    initializeChatbot();
     updateUI();
-    renderVideoEventLog();
-    updateVideoDiagnostics();
 });
 
 // Event Listeners
@@ -113,14 +82,12 @@ function initializeEventListeners() {
     elements.watchVideoButton.addEventListener('click', handleWatchVideo);
     elements.playPauseButton.addEventListener('click', handlePlayPause);
     elements.progressBar.addEventListener('input', handleProgressChange);
-    // Scene navigation removed in single-video mode
+    if (elements.prevSceneButton) elements.prevSceneButton.addEventListener('click', () => jumpScene(-1));
+    if (elements.nextSceneButton) elements.nextSceneButton.addEventListener('click', () => jumpScene(1));
     
     // Quiz functionality
     elements.takeQuizButton.addEventListener('click', handleTakeQuiz);
     elements.submitQuizButton.addEventListener('click', handleSubmitQuiz);
-
-    if (elements.openVideoButton) elements.openVideoButton.addEventListener('click', handleOpenVideo);
-    if (elements.copyVideoUrlButton) elements.copyVideoUrlButton.addEventListener('click', handleCopyVideoUrl);
 
     // Processed docs actions
     if (processedElements.refreshButton) processedElements.refreshButton.addEventListener('click', fetchProcessedDocs);
@@ -131,16 +98,6 @@ function initializeEventListeners() {
         if (e.target.type === 'radio' && e.target.name === 'q1') {
             handleQuizOptionSelection(e.target.value);
         }
-    });
-
-    // Chatbot interactions
-    if (elements.chatForm) elements.chatForm.addEventListener('submit', handleChatSubmit);
-    if (elements.chatRefreshButton) elements.chatRefreshButton.addEventListener('click', handleChatRefresh);
-    if (elements.chatDocSelect) elements.chatDocSelect.addEventListener('change', handleChatDocChange);
-    if (elements.chatToggleButton) elements.chatToggleButton.addEventListener('click', toggleChatPanel);
-    if (elements.chatCloseButton) elements.chatCloseButton.addEventListener('click', event => {
-        if (event) event.preventDefault();
-        closeChatPanel();
     });
 }
 
@@ -226,55 +183,64 @@ function handleWatchVideo() {
     if (!videoScenes.length && loadedVideoData?.scenes) {
         hydrateStoryboardFromJson(loadedVideoData);
     }
+    pausePlayback();
     updateVideoPlayer();
-
-    if (videoAsset?.mp4Url && elements.storyboardVideo) {
-        elements.storyboardVideo.play().catch(() => {/* ignore autoplay block */});
-    }
 
     setTimeout(() => {
         elements.takeQuizButton.style.display = 'block';
         elements.takeQuizButton.classList.add('fade-in');
     }, 600);
-    updateVideoDiagnostics({ reason: 'watchVideo' });
 }
 
 function handlePlayPause() {
-    if (videoAsset?.mp4Url && elements.storyboardVideo) {
-        const videoEl = elements.storyboardVideo;
-        if (videoEl.ended) {
-            videoEl.currentTime = 0;
-        }
-        if (videoEl.paused) {
-            videoEl.play().catch(() => {});
-        } else {
-            videoEl.pause();
-        }
-        return;
+    if (!videoScenes.length) return;
+
+    if (!appState.isVideoPlaying && appState.currentProgress >= 100) {
+        updateScene(0, { progressOverride: 0 });
     }
-    // If no generated video yet, nothing else to toggle.
+
+    if (appState.isVideoPlaying) {
+        pausePlayback();
+    } else {
+        startPlayback();
+    }
 }
 
-function startPlayback() { /* no-op in single video mode without asset */ }
+function startPlayback() {
+    if (!videoScenes.length) return;
+    clearInterval(playbackInterval);
+
+    appState.isVideoPlaying = true;
+    elements.playPauseButton.innerHTML = '<i class="fas fa-pause"></i>';
+
+    const tickMs = 200;
+    const totalSeconds = Math.max(appState.totalDurationSeconds, videoScenes.length * SCENE_DURATION_SECONDS);
+    const progressIncrement = (tickMs / (totalSeconds * 1000)) * 100;
+
+    playbackInterval = setInterval(() => {
+        if (!appState.isVideoPlaying) {
+            clearInterval(playbackInterval);
+            return;
+        }
+
+        appState.currentProgress = Math.min(100, appState.currentProgress + progressIncrement);
+        elements.progressBar.value = Math.round(appState.currentProgress);
+        updateTimeDisplay();
+
+        const sceneFloat = (appState.currentProgress / 100) * videoScenes.length;
+        const nextSceneIndex = Math.min(videoScenes.length - 1, Math.floor(sceneFloat));
+        if (nextSceneIndex !== appState.currentSceneIndex) {
+            updateScene(nextSceneIndex, { suppressProgressSync: true });
+        }
+
+        if (appState.currentProgress >= 100) {
+            pausePlayback({ reachedEnd: true });
+        }
+    }, tickMs);
+}
 
 function pausePlayback(options = {}) {
     const { reachedEnd = false } = options;
-    if (videoAsset?.mp4Url && elements.storyboardVideo) {
-        const videoEl = elements.storyboardVideo;
-        videoEl.pause();
-        if (reachedEnd) {
-            if (Number.isFinite(videoEl.duration) && videoEl.duration > 0) {
-                videoEl.currentTime = videoEl.duration;
-            }
-            appState.currentProgress = 100;
-            elements.playPauseButton.innerHTML = '<i class="fas fa-rotate-right"></i>';
-        } else {
-            elements.playPauseButton.innerHTML = '<i class="fas fa-play"></i>';
-        }
-        appState.isVideoPlaying = false;
-        updateTimeDisplay();
-        return;
-    }
     if (playbackInterval) {
         clearInterval(playbackInterval);
         playbackInterval = null;
@@ -286,164 +252,19 @@ function pausePlayback(options = {}) {
 function handleProgressChange(event) {
     if (!videoScenes.length) return;
     const value = parseInt(event.target.value, 10);
-    if (videoAsset?.mp4Url && elements.storyboardVideo) {
-        const videoEl = elements.storyboardVideo;
-        const duration = Number(videoEl.duration) || videoAsset.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
-        if (Number.isFinite(duration) && duration > 0) {
-            const targetTime = Math.min(100, Math.max(0, value)) / 100 * duration;
-            videoEl.currentTime = targetTime;
-        }
-        appState.currentProgress = Math.min(100, Math.max(0, value));
-        updateTimeDisplay();
-        return;
-    }
-    // No scene model fallback UI now
+    const sceneIndex = Math.min(videoScenes.length - 1, Math.floor((value / 100) * videoScenes.length));
+    pausePlayback();
+    updateScene(sceneIndex, { progressOverride: value });
 }
 
-function handleOpenVideo() {
-    if (!videoAsset?.mp4Url) {
-        showNotification('No generated video URL yet.', 'error');
-        return;
-    }
-    window.open(videoAsset.mp4Url, '_blank', 'noopener');
-    logVideoEvent('openVideo');
+function jumpScene(delta) {
+    if (!videoScenes.length) return;
+    const nextIndex = Math.min(videoScenes.length - 1, Math.max(0, appState.currentSceneIndex + delta));
+    pausePlayback();
+    updateScene(nextIndex);
 }
-
-async function handleCopyVideoUrl() {
-    if (!videoAsset?.mp4Url) {
-        showNotification('No generated video URL yet.', 'error');
-        return;
-    }
-    try {
-        await navigator.clipboard.writeText(videoAsset.mp4Url);
-        showNotification('Video URL copied to clipboard.', 'success');
-        logVideoEvent('copyVideoUrl');
-    } catch (err) {
-        console.warn('[video-diagnostics] Failed to copy URL', err);
-        showNotification('Unable to copy video URL. Check browser permissions.', 'error');
-    }
-}
-
-function describeReadyState(code) {
-    switch (code) {
-        case 0: return 'HAVE_NOTHING';
-        case 1: return 'HAVE_METADATA';
-        case 2: return 'HAVE_CURRENT_DATA';
-        case 3: return 'HAVE_FUTURE_DATA';
-        case 4: return 'HAVE_ENOUGH_DATA';
-        default: return `STATE_${code}`;
-    }
-}
-
-function describeNetworkState(code) {
-    switch (code) {
-        case 0: return 'NETWORK_EMPTY';
-        case 1: return 'NETWORK_IDLE';
-        case 2: return 'NETWORK_LOADING';
-        case 3: return 'NETWORK_NO_SOURCE';
-        default: return `NETWORK_${code}`;
-    }
-}
-
-function formatBytes(bytes) {
-    if (!Number.isFinite(bytes) || bytes <= 0) return 'unknown';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    const idx = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-    const value = bytes / Math.pow(1024, idx);
-    return `${value.toFixed(value > 100 ? 0 : 1)} ${units[idx]}`;
-}
-
-function logVideoEvent(type, details = {}) {
-    const videoEl = elements.storyboardVideo;
-    const now = Date.now();
-    if (type === 'timeupdate' || type === 'progress') {
-        const last = videoEventLog[videoEventLog.length - 1];
-        if (last && last.type === 'timeupdate' && now - last.epoch < 750) {
-            return;
-        }
-        if (last && last.type === 'progress' && now - last.epoch < 750) {
-            return;
-        }
-    }
-    const entry = {
-        epoch: now,
-        label: new Date(now).toLocaleTimeString(),
-        type,
-        current: videoEl ? Number(videoEl.currentTime.toFixed(2)) : null,
-        readyState: videoEl ? describeReadyState(videoEl.readyState) : 'n/a',
-        networkState: videoEl ? describeNetworkState(videoEl.networkState) : 'n/a',
-        detail: details.message || details.note || ''
-    };
-    videoEventLog.push(entry);
-    if (videoEventLog.length > 40) {
-        videoEventLog.shift();
-    }
-    renderVideoEventLog();
-}
-
-function renderVideoEventLog() {
-    const list = elements.videoDiagEvents;
-    if (!list) return;
-    list.innerHTML = '';
-    if (!videoEventLog.length) {
-        const li = document.createElement('li');
-        li.textContent = 'Waiting for playback events...';
-        list.appendChild(li);
-        return;
-    }
-    [...videoEventLog]
-        .slice()
-        .reverse()
-        .forEach(evt => {
-            const li = document.createElement('li');
-            const timeText = typeof evt.current === 'number' ? `${evt.current.toFixed(1)}s` : 'n/a';
-            const detail = evt.detail ? ` • ${evt.detail}` : '';
-            li.textContent = `[${evt.label}] ${evt.type} • t=${timeText} • ready=${evt.readyState} • net=${evt.networkState}${detail}`;
-            list.appendChild(li);
-        });
-}
-
-function updateVideoDiagnostics({ reason } = {}) {
-    const panel = elements.videoDiagnosticsPanel;
-    if (!panel) return;
-    const videoEl = elements.storyboardVideo;
-
-    if (videoAsset?.mp4Url) {
-        panel.classList.add('active');
-        const ready = videoEl ? describeReadyState(videoEl.readyState) : 'n/a';
-        const network = videoEl ? describeNetworkState(videoEl.networkState) : 'n/a';
-        elements.videoDiagStatus.textContent = `Ready (${ready} | ${network})`;
-        elements.videoDiagContentType.textContent = videoAsset.contentType || 'unknown';
-        elements.videoDiagBytes.textContent = videoAsset.byteLength ? formatBytes(videoAsset.byteLength) : 'unknown';
-        elements.videoDiagFourcc.textContent = videoAsset.containerFourCc || '—';
-        elements.videoDiagMajor.textContent = videoAsset.majorBrand || '—';
-    } else {
-        panel.classList.remove('active');
-        elements.videoDiagStatus.textContent = 'No video asset loaded';
-        elements.videoDiagContentType.textContent = '—';
-        elements.videoDiagBytes.textContent = '—';
-        elements.videoDiagFourcc.textContent = '—';
-        elements.videoDiagMajor.textContent = '—';
-        videoEventLog.length = 0;
-        renderVideoEventLog();
-    }
-
-    if (reason) {
-        logVideoEvent(reason);
-    }
-}
-
-function jumpScene() { /* removed */ }
 
 function updateTimeDisplay() {
-    if (videoAsset?.mp4Url && elements.storyboardVideo) {
-        const videoEl = elements.storyboardVideo;
-        const duration = Number(videoEl.duration) || videoAsset.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
-        const currentSeconds = Number.isFinite(videoEl.currentTime) ? videoEl.currentTime : (appState.currentProgress / 100) * duration;
-        elements.currentTime.textContent = formatTime(currentSeconds);
-        elements.totalTime.textContent = formatTime(duration);
-        return;
-    }
     const total = Math.max(appState.totalDurationSeconds, videoScenes.length * SCENE_DURATION_SECONDS);
     const currentSeconds = Math.round((appState.currentProgress / 100) * total);
     elements.currentTime.textContent = formatTime(currentSeconds);
@@ -454,13 +275,10 @@ function updateVideoPlayer() {
     if (appState.selectedFileName) {
         elements.videoTitle.textContent = `Project: ${toTitleCase(extractDocBase(appState.selectedFileName))}`;
     }
-    if (videoAsset?.mp4Url) {
-        syncVideoProgressFromElement();
-    } else {
-        elements.progressBar.value = Math.round(appState.currentProgress);
-        updateTimeDisplay();
-    }
-    updateVideoDiagnostics();
+
+    updateScene(appState.currentSceneIndex ?? 0, { progressOverride: appState.currentProgress });
+    elements.progressBar.value = Math.round(appState.currentProgress);
+    updateTimeDisplay();
 }
 
 // Quiz functionality
@@ -566,26 +384,22 @@ async function fetchQuizData() {
 }
 
 // ---------------- Processed Docs Integration ---------------- //
-async function fetchProcessedDocs(options = {}) {
-    const { silent = false } = options;
+async function fetchProcessedDocs() {
     const base = window.location.origin;
     const url = `${base}/api/list/docs`;
-    if (processedElements.refreshButton) processedElements.refreshButton.disabled = true;
-    if (elements.chatRefreshButton) elements.chatRefreshButton.disabled = true;
+    processedElements.refreshButton.disabled = true;
     try {
         const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         const docs = Array.isArray(data.documents) ? data.documents : [];
         populateProcessedDocsSelect(docs);
-        updateChatDocOptions(docs);
-        if (!silent) showNotification(`Loaded ${docs.length} processed docs`, 'success');
+        showNotification(`Loaded ${docs.length} processed docs`, 'success');
     } catch (e) {
         console.warn('Failed to fetch processed docs', e);
-        if (!silent) showNotification('Failed to load documents', 'error');
+        showNotification('Failed to load documents', 'error');
     } finally {
-        if (processedElements.refreshButton) processedElements.refreshButton.disabled = false;
-        if (elements.chatRefreshButton) elements.chatRefreshButton.disabled = false;
+        processedElements.refreshButton.disabled = false;
     }
 }
 
@@ -598,225 +412,6 @@ function populateProcessedDocsSelect(docs) {
     }
     sel.innerHTML = '<option value="" disabled selected>Select document...</option>' +
         docs.map(d => `<option value="${d}">${d}</option>`).join('');
-}
-
-function updateChatDocOptions(docs) {
-    const select = elements.chatDocSelect;
-    if (!select) return;
-
-    const previous = select.value;
-    select.innerHTML = '<option value="" disabled selected>-- select document --</option>' +
-        docs.map(d => `<option value="${d}">${d}</option>`).join('');
-
-    if (previous && docs.includes(previous)) {
-        select.value = previous;
-        chatState.selectedDoc = previous;
-    } else {
-        chatState.selectedDoc = '';
-        renderChatEmptyState();
-    }
-}
-
-// ---------------- Chatbot Experience ---------------- //
-
-function initializeChatbot() {
-    renderChatEmptyState();
-    setChatStatus('Select a processed document to begin.');
-    if (elements.chatInput) elements.chatInput.disabled = true;
-    closeChatPanel({ silent: true });
-    fetchProcessedDocs({ silent: true }).catch(() => {});
-}
-
-function toggleChatPanel() {
-    if (!elements.chatPanel) return;
-    const isOpen = elements.chatPanel.classList.contains('is-open');
-    if (isOpen) {
-        closeChatPanel();
-    } else {
-        openChatPanel();
-    }
-}
-
-function openChatPanel() {
-    if (!elements.chatPanel) return;
-    elements.chatPanel.classList.add('is-open');
-    elements.chatPanel.setAttribute('aria-hidden', 'false');
-    if (elements.chatToggleButton) elements.chatToggleButton.setAttribute('aria-expanded', 'true');
-    if (elements.chatPanel && typeof elements.chatPanel.focus === 'function') {
-        elements.chatPanel.focus();
-    }
-    if (elements.chatInput && !elements.chatInput.disabled) {
-        setTimeout(() => {
-            if (elements.chatInput) elements.chatInput.focus();
-        }, 150);
-    }
-}
-
-function closeChatPanel(options = {}) {
-    const { silent = false } = options;
-    if (!elements.chatPanel) return;
-    elements.chatPanel.classList.remove('is-open');
-    elements.chatPanel.setAttribute('aria-hidden', 'true');
-    if (elements.chatToggleButton) {
-        elements.chatToggleButton.setAttribute('aria-expanded', 'false');
-        if (!silent) {
-            elements.chatToggleButton.focus();
-        }
-    }
-}
-
-function renderChatEmptyState(message) {
-    if (!elements.chatMessages) return;
-    const text = message || 'Choose a document and ask a question to get started.';
-    elements.chatMessages.innerHTML = `<div class="chat-empty-state">${text}</div>`;
-}
-
-function handleChatDocChange() {
-    if (!elements.chatDocSelect) return;
-    const value = elements.chatDocSelect.value;
-    chatState.selectedDoc = value;
-    chatState.history = [];
-    renderChatEmptyState(`Chatting about <strong>${escapeHtml(value)}</strong>. Ask your first question!`);
-    setChatStatus('');
-    if (elements.chatInput) {
-        elements.chatInput.disabled = false;
-        elements.chatInput.focus();
-    }
-}
-
-function handleChatRefresh(event) {
-    if (event) event.preventDefault();
-    fetchProcessedDocs();
-}
-
-function handleChatSubmit(event) {
-    event.preventDefault();
-    if (chatState.isLoading) return;
-    if (!chatState.selectedDoc) {
-        setChatStatus('Please select a document first.');
-        return;
-    }
-    const question = elements.chatInput.value.trim();
-    if (!question) return;
-
-    appendChatMessage('user', question);
-    chatState.history.push({ role: 'user', content: question });
-    elements.chatInput.value = '';
-    sendChatMessage(question);
-}
-
-async function sendChatMessage(question) {
-    const historyPayload = chatState.history.slice(-10);
-    chatState.isLoading = true;
-    setChatStatus('Thinking...');
-    if (elements.chatInput) elements.chatInput.disabled = true;
-    openChatPanel();
-    const base = window.location.origin;
-    try {
-        const resp = await fetch(`${base}/api/chatbot/ask`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                docName: chatState.selectedDoc,
-                question,
-                history: historyPayload
-            })
-        });
-
-        const rawBody = await resp.text();
-        const displayBody = rawBody && rawBody.length > 600 ? `${rawBody.slice(0, 600)}…` : rawBody;
-        let data = null;
-        if (rawBody) {
-            try {
-                data = JSON.parse(rawBody);
-            } catch (parseErr) {
-                console.warn('[chatbot] Non-JSON response payload', { status: resp.status, body: rawBody, error: parseErr });
-            }
-        }
-
-        if (!resp.ok) {
-            const message = (data && data.error) ? data.error : (displayBody || `HTTP ${resp.status}`);
-            const detailSource = data && (data.details || data.trace || data.response);
-            const detailText = detailSource ? ` ${formatErrorDetails(detailSource)}` : '';
-            appendChatMessage('bot', `I hit a snag answering that: ${message}${detailText}`);
-            setChatStatus('');
-            chatState.isLoading = false;
-            if (elements.chatInput) elements.chatInput.disabled = false;
-            return;
-        }
-
-        const answer = (data && data.answer) ? data.answer : 'I was unable to find relevant information in the document.';
-        appendChatMessage('bot', answer, { subtitle: `Source: ${chatState.selectedDoc}` });
-        chatState.history.push({ role: 'assistant', content: answer });
-        setChatStatus('');
-    } catch (err) {
-        appendChatMessage('bot', `I could not reach the Q&A service. ${err.message || err}`);
-        setChatStatus('');
-    } finally {
-        chatState.isLoading = false;
-        if (elements.chatInput) elements.chatInput.disabled = false;
-        if (elements.chatInput) elements.chatInput.focus();
-    }
-}
-
-function appendChatMessage(role, text, options = {}) {
-    if (!elements.chatMessages || !text) return;
-
-    if (elements.chatMessages.querySelector('.chat-empty-state')) {
-        elements.chatMessages.innerHTML = '';
-    }
-
-    const bubble = document.createElement('div');
-    bubble.className = `chat-bubble ${role}`;
-
-    const safeText = escapeHtml(text).replace(/\n/g, '<br>');
-    bubble.innerHTML = safeText;
-
-    if (options.subtitle) {
-        const small = document.createElement('small');
-        small.innerText = options.subtitle;
-        bubble.appendChild(small);
-    }
-
-    elements.chatMessages.appendChild(bubble);
-    scrollChatToBottom();
-}
-
-function setChatStatus(message) {
-    if (!elements.chatStatus) return;
-    elements.chatStatus.textContent = message || '';
-}
-
-function scrollChatToBottom() {
-    if (!elements.chatMessages) return;
-    requestAnimationFrame(() => {
-        elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
-    });
-}
-
-function escapeHtml(str) {
-    return str.replace(/[&<>"']/g, function(match) {
-        switch (match) {
-            case '&': return '&amp;';
-            case '<': return '&lt;';
-            case '>': return '&gt;';
-            case '"': return '&quot;';
-            case "'": return '&#39;';
-            default: return match;
-        }
-    });
-}
-
-function formatErrorDetails(details) {
-    if (!details) return '';
-    try {
-        if (typeof details === 'string') {
-            return `(${details})`;
-        }
-        return `(${JSON.stringify(details)})`;
-    } catch (err) {
-        return '';
-    }
 }
 
 async function loadSelectedProcessedDoc() {
@@ -839,11 +434,9 @@ async function fetchGeneratedVideo(docName) {
     loadedVideoData = null;
     const base = window.location.origin;
     try {
-        // Add cache-busting param to avoid stale 304 returning an old stub
-        const resp = await fetch(`${base}/api/video/${encodeURIComponent(docName)}?t=${Date.now()}`, { headers: { 'Accept': 'application/json', 'Cache-Control': 'no-cache' } });
+        const resp = await fetch(`${base}/api/video/${encodeURIComponent(docName)}`, { headers: { 'Accept': 'application/json' } });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         loadedVideoData = await resp.json();
-        console.debug('[video-diagnostics] Raw video JSON payload:', loadedVideoData);
     } catch (e) {
         console.warn('Video fetch failed', e);
         showNotification('Video data not found', 'error');
@@ -879,7 +472,6 @@ function applyLoadedVideo(docName, videoJson) {
     if (loadedQuizData && loadedQuizData.questions) {
         elements.takeQuizButton.style.display = 'block';
     }
-    updateVideoDiagnostics({ reason: 'manifestLoaded' });
 }
 
 function hydrateStoryboardFromJson(videoJson) {
@@ -889,34 +481,12 @@ function hydrateStoryboardFromJson(videoJson) {
         buildSceneFromText(videoJson?.summary || 'This document did not include scene details, so this is a generated overview.', 0)
     ];
 
-    const asset = normalizeVideoAsset(videoJson?.videoAsset);
-    configureVideoAsset(asset);
-
-    if (videoJson?.videoAsset) {
-        const status = videoJson.videoAsset.status || videoJson.videoAsset.Status;
-        const errorMessage = videoJson.videoAsset.error || videoJson.videoAsset.Error;
-        if (status === 'failed' && errorMessage) {
-            showNotification('Video generation failed: ' + errorMessage, 'error');
-        } else if (status === 'skipped' && errorMessage) {
-            showNotification('Video generation skipped: ' + errorMessage, 'info');
-        }
-    }
-
     appState.currentSceneIndex = 0;
     appState.currentProgress = 0;
-    appState.totalDurationSeconds = videoAsset?.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
+    appState.totalDurationSeconds = videoScenes.length * SCENE_DURATION_SECONDS;
 
-    // Single-video mode: no scene indicators; initialize keywords & text using first entry
-    if (videoScenes.length) {
-        const first = videoScenes[0];
-        elements.sceneTitle.textContent = first.title;
-        elements.sceneText.textContent = first.text;
-        renderSceneKeywords(first.keywords || []);
-        elements.sceneBadge.textContent = first.badge || '';
-        elements.sceneBadge.classList.toggle('hidden', !first.badge);
-    }
-    // Reset progress bar visual
-    elements.progressBar.value = 0;
+    renderSceneIndicators();
+    updateScene(0, { progressOverride: 0 });
     updateTimeDisplay();
 }
 
@@ -950,184 +520,6 @@ function normalizeScenes(rawScenes, fallbackSummary) {
         .filter(Boolean);
 }
 
-function normalizeVideoAsset(raw) {
-    if (!raw || !raw.mp4Url) return null;
-    const duration = Number(raw.durationSeconds);
-    console.debug('[video-diagnostics] Normalizing video asset', raw);
-    return {
-        mp4Url: raw.mp4Url,
-        thumbnailUrl: raw.thumbnailUrl || null,
-        durationSeconds: Number.isFinite(duration) && duration > 0 ? duration : 0,
-        prompt: raw.prompt || '',
-        operationId: raw.operationId || raw.id || null,
-        sourceUrl: raw.sourceUrl || null,
-        thumbnailSourceUrl: raw.thumbnailSourceUrl || null,
-        contentType: raw.contentType || null,
-        byteLength: (() => {
-            const value = typeof raw.byteLength === 'string' ? Number.parseFloat(raw.byteLength) : raw.byteLength;
-            return Number.isFinite(value) && value > 0 ? value : null;
-        })(),
-        containerFourCc: raw.containerFourCc || raw.header || null,
-        majorBrand: raw.majorBrand || null,
-        hexPrefix: raw.hexPrefix || null
-    };
-}
-
-function configureVideoAsset(asset) {
-    const videoEl = elements.storyboardVideo;
-    if (!videoEl) return;
-
-    if (asset && asset.mp4Url) {
-        console.debug('[video-diagnostics] Configuring video element with mp4Url:', asset.mp4Url);
-        videoAsset = asset;
-        videoEl.src = asset.mp4Url;
-        videoEl.classList.add('active');
-        videoEl.setAttribute('controls', 'controls');
-        videoEl.playsInline = true;
-        videoEl.loop = false;
-        videoEl.muted = false;
-        if (asset.thumbnailUrl) {
-            videoEl.poster = asset.thumbnailUrl;
-        } else if (asset.thumbnailSourceUrl) {
-            videoEl.poster = asset.thumbnailSourceUrl;
-        } else if (videoScenes[0]?.imageUrl) {
-            videoEl.poster = videoScenes[0].imageUrl;
-        } else {
-            videoEl.removeAttribute('poster');
-        }
-        videoEl.load();
-        if (!videoListenersAttached) {
-            attachVideoEventListeners();
-        }
-        if (asset.durationSeconds) {
-            appState.totalDurationSeconds = asset.durationSeconds;
-        }
-        if (elements.sceneBackdrop) {
-            elements.sceneBackdrop.classList.add('has-video');
-        }
-        updateTimeDisplay();
-        if (asset.containerFourCc && asset.containerFourCc.toLowerCase() !== 'ftyp') {
-            showNotification(`Video header ${asset.containerFourCc} detected; playback support may vary.`, 'info');
-            console.warn('[video-diagnostics] Unexpected container header', asset.containerFourCc, asset);
-        }
-        videoEventLog.length = 0;
-        renderVideoEventLog();
-        updateVideoDiagnostics({ reason: 'assetConfigured' });
-    } else {
-        console.debug('[video-diagnostics] No video asset provided; falling back to storyboard mode.');
-        if (videoAsset && elements.storyboardVideo) {
-            elements.storyboardVideo.pause();
-        }
-        videoAsset = null;
-        videoEl.classList.remove('active');
-        videoEl.removeAttribute('src');
-        videoEl.removeAttribute('poster');
-        videoEl.removeAttribute('controls');
-        if (elements.sceneBackdrop) {
-            elements.sceneBackdrop.classList.remove('has-video');
-        }
-        appState.totalDurationSeconds = videoScenes.length * SCENE_DURATION_SECONDS;
-        updateTimeDisplay();
-        // Attempt to derive a fallback clip path if storage naming is predictable
-        try {
-            const maybeDoc = extractDocBase(appState.selectedFileName || '');
-            if (maybeDoc) {
-                // Heuristic: if container is public we can attempt direct link (will 404 silently if not)
-                const guessed = `${window.location.origin}/generated-video-files/${maybeDoc.toLowerCase()}/clip.mp4`;
-                console.debug('[video-diagnostics] Guessed fallback video URL:', guessed);
-            }
-        } catch (_) { /* ignore */ }
-        updateVideoDiagnostics({ reason: 'assetCleared' });
-    }
-}
-
-function attachVideoEventListeners() {
-    const videoEl = elements.storyboardVideo;
-    if (!videoEl || videoListenersAttached) return;
-    videoListenersAttached = true;
-
-    videoEl.addEventListener('play', () => {
-        appState.isVideoPlaying = true;
-        elements.playPauseButton.innerHTML = '<i class="fas fa-pause"></i>';
-        logVideoEvent('play');
-        updateVideoDiagnostics();
-    });
-
-    videoEl.addEventListener('pause', () => {
-        if (videoEl.ended) return;
-        appState.isVideoPlaying = false;
-        elements.playPauseButton.innerHTML = '<i class="fas fa-play"></i>';
-        logVideoEvent('pause');
-        updateVideoDiagnostics();
-    });
-
-    videoEl.addEventListener('ended', () => {
-        appState.isVideoPlaying = false;
-        appState.currentProgress = 100;
-        elements.playPauseButton.innerHTML = '<i class="fas fa-rotate-right"></i>';
-        elements.progressBar.value = 100;
-        updateTimeDisplay();
-        logVideoEvent('ended');
-        updateVideoDiagnostics();
-    });
-
-    videoEl.addEventListener('timeupdate', () => {
-        syncVideoProgressFromElement();
-        logVideoEvent('timeupdate');
-    });
-
-    videoEl.addEventListener('loadedmetadata', () => {
-        if (videoAsset) {
-            const duration = Number(videoEl.duration);
-            if (Number.isFinite(duration) && duration > 0) {
-                videoAsset.durationSeconds = duration;
-            }
-        }
-        syncVideoProgressFromElement();
-        logVideoEvent('loadedmetadata');
-        updateVideoDiagnostics();
-    });
-
-    videoEl.addEventListener('error', (ev) => {
-        const err = videoEl.error;
-        console.error('[video-diagnostics] HTMLMediaElement error', err);
-        showNotification('Video playback error: ' + (err?.message || 'failed to load'), 'error');
-        logVideoEvent('error', { message: err?.message });
-        updateVideoDiagnostics();
-    });
-
-    const diagEvents = ['playing', 'canplay', 'canplaythrough', 'waiting', 'stalled', 'suspend', 'progress', 'seeking', 'seeked', 'loadeddata', 'durationchange', 'ratechange', 'abort', 'emptied'];
-    diagEvents.forEach(evt => {
-        videoEl.addEventListener(evt, () => {
-            logVideoEvent(evt);
-            if (evt !== 'progress') {
-                updateVideoDiagnostics();
-            }
-        });
-    });
-}
-
-function syncVideoProgressFromElement() {
-    if (!videoAsset || !elements.storyboardVideo) return;
-    const videoEl = elements.storyboardVideo;
-    const duration = Number(videoEl.duration) || videoAsset.durationSeconds || (videoScenes.length * SCENE_DURATION_SECONDS);
-    if (!Number.isFinite(duration) || duration <= 0) return;
-
-    const progress = Math.min(100, Math.max(0, (videoEl.currentTime / duration) * 100));
-    appState.currentProgress = progress;
-    elements.progressBar.value = Math.round(progress);
-    appState.totalDurationSeconds = duration;
-
-    if (videoScenes.length) {
-        const sceneIndex = Math.min(videoScenes.length - 1, Math.floor((progress / 100) * videoScenes.length));
-        if (sceneIndex !== appState.currentSceneIndex) {
-            updateScene(sceneIndex, { suppressProgressSync: true });
-        }
-    }
-
-    updateTimeDisplay();
-}
-
 function buildSceneFromText(text, idx) {
     const cleanText = typeof text === 'string' && text.trim().length ? text.trim() : 'Generated scene content pending.';
     return {
@@ -1144,7 +536,59 @@ function buildSceneFromText(text, idx) {
     };
 }
 
-function updateScene() { /* removed scene update logic in single video mode */ }
+function updateScene(index, options = {}) {
+    if (!videoScenes.length) {
+        elements.sceneBackdrop.style.background = createGradient(0);
+        elements.sceneBadge.textContent = '';
+        elements.sceneBadge.classList.add('hidden');
+        elements.sceneTitle.textContent = 'Awaiting storyboard';
+        elements.sceneText.textContent = 'Upload a document to generate AI-powered scenes.';
+        elements.sceneKeywords.innerHTML = '';
+        elements.sceneIndex.textContent = '0';
+        elements.sceneCount.textContent = '0';
+        return;
+    }
+
+    const { progressOverride = null, suppressProgressSync = false } = options;
+    const safeIndex = Math.min(videoScenes.length - 1, Math.max(0, index));
+    const scene = videoScenes[safeIndex];
+
+    appState.currentSceneIndex = safeIndex;
+        if (scene.imageUrl) {
+            elements.sceneBackdrop.style.backgroundImage = `linear-gradient(160deg, rgba(15,23,42,0.15) 10%, rgba(15,23,42,0.9) 70%), url('${scene.imageUrl}')`;
+            elements.sceneBackdrop.style.backgroundSize = 'cover';
+            elements.sceneBackdrop.style.backgroundPosition = 'center';
+            elements.sceneBackdrop.style.backgroundRepeat = 'no-repeat';
+            elements.sceneBackdrop.classList.add('has-image');
+            if (scene.imageAlt) {
+                elements.sceneBackdrop.setAttribute('aria-label', scene.imageAlt);
+            } else {
+                elements.sceneBackdrop.removeAttribute('aria-label');
+            }
+        } else {
+            elements.sceneBackdrop.style.backgroundImage = '';
+            elements.sceneBackdrop.style.background = scene.gradient;
+            elements.sceneBackdrop.classList.remove('has-image');
+            elements.sceneBackdrop.removeAttribute('aria-label');
+        }
+        const badgeLabel = scene.badge || '';
+        elements.sceneBadge.textContent = badgeLabel;
+        elements.sceneBadge.classList.toggle('hidden', !badgeLabel);
+    elements.sceneTitle.textContent = scene.title;
+    elements.sceneText.textContent = scene.text;
+    renderSceneKeywords(scene.keywords);
+    elements.sceneIndex.textContent = scene.index ?? safeIndex + 1;
+    elements.sceneCount.textContent = videoScenes.length;
+    highlightSceneIndicator(safeIndex);
+
+    if (progressOverride !== null) {
+        appState.currentProgress = progressOverride;
+    } else if (!suppressProgressSync) {
+        appState.currentProgress = (safeIndex / videoScenes.length) * 100;
+    }
+    elements.progressBar.value = Math.round(appState.currentProgress);
+    updateTimeDisplay();
+}
 
 function renderSceneKeywords(keywords) {
     elements.sceneKeywords.innerHTML = '';
@@ -1158,7 +602,31 @@ function renderSceneKeywords(keywords) {
     });
 }
 
-// (Scene indicators removed in single video mode)
+function renderSceneIndicators() {
+    if (!elements.sceneIndicatorRow) return;
+    elements.sceneIndicatorRow.innerHTML = '';
+    videoScenes.forEach((scene, idx) => {
+        const dot = document.createElement('button');
+        dot.className = 'scene-indicator';
+        dot.type = 'button';
+        dot.title = scene.title;
+        dot.dataset.index = String(idx);
+        dot.addEventListener('click', () => {
+            pausePlayback();
+            updateScene(idx);
+            updateTimeDisplay();
+        });
+        elements.sceneIndicatorRow.appendChild(dot);
+    });
+    highlightSceneIndicator(appState.currentSceneIndex);
+}
+
+function highlightSceneIndicator(index) {
+    if (!elements.sceneIndicatorRow) return;
+    [...elements.sceneIndicatorRow.children].forEach((dot, idx) => {
+        dot.classList.toggle('active', idx === index);
+    });
+}
 
 const gradientPalette = [
     ['#2563eb', '#9333ea'],
@@ -1342,10 +810,14 @@ document.addEventListener('keydown', function(event) {
     }
     
     // Arrow keys for progress control
-    // Removed scene navigation shortcuts in single video mode
-
-    if (event.key === 'Escape' && elements.chatPanel && elements.chatPanel.classList.contains('is-open')) {
-        closeChatPanel();
+    if (event.code === 'ArrowLeft' && appState.isVideoReady) {
+        event.preventDefault();
+        jumpScene(-1);
+    }
+    
+    if (event.code === 'ArrowRight' && appState.isVideoReady) {
+        event.preventDefault();
+        jumpScene(1);
     }
 });
 
@@ -1355,4 +827,4 @@ window.runDemo = runDemo;
 
 console.log('KT Studio initialized successfully!');
 console.log('Use runDemo() to test the application flow.');
-console.log('Keyboard shortcuts: Space (play/pause).');
+console.log('Keyboard shortcuts: Space (play/pause), Left/Right arrows (seek).');

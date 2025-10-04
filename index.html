@@ -97,11 +97,10 @@
                 <div class="card video-player-card">
                     <div class="video-player-header">
                         <h3 id="videoTitle">Project: System Architecture</h3>
-                        <!-- Removed AI Storyboard badge per user request -->
+                        <span class="video-mode-badge"><i class="fas fa-wand-magic-sparkles"></i> AI Storyboard</span>
                     </div>
                     <div id="videoContent" class="video-content">
                         <div id="sceneBackdrop" class="scene-backdrop">
-                            <video id="storyboardVideo" class="storyboard-video" playsinline preload="metadata" tabindex="0"></video>
                             <div class="scene-overlay">
                                 <div class="scene-top-row">
                                     <span id="sceneBadge" class="scene-badge">Overview</span>
@@ -116,37 +115,26 @@
                             </div>
                         </div>
                     </div>
-                    <div class="video-controls single-video-mode">
+                    <div class="video-controls">
                         <div class="progress-container">
                             <input type="range" id="progressBar" value="0" min="0" max="100" class="progress-bar">
                         </div>
                         <div class="control-buttons">
+                            <button id="prevSceneButton" class="control-btn" title="Previous scene">
+                                <i class="fas fa-step-backward"></i>
+                            </button>
                             <button id="playPauseButton" class="control-btn">
                                 <i class="fas fa-play"></i>
+                            </button>
+                            <button id="nextSceneButton" class="control-btn" title="Next scene">
+                                <i class="fas fa-step-forward"></i>
                             </button>
                             <span class="time-display">
                                 <span id="currentTime">0:00</span> / <span id="totalTime">0:00</span>
                             </span>
+                            <div class="scene-counter"><span id="sceneIndex">1</span>/<span id="sceneCount">1</span></div>
                         </div>
-                    </div>
-                    <div id="videoDiagnosticsPanel" class="video-diagnostics" aria-live="polite">
-                        <div class="diag-header">
-                            <span id="videoDiagStatus">No video asset loaded</span>
-                            <div class="diag-actions">
-                                <button id="openVideoButton" class="diag-button" title="Open video in new tab"><i class="fas fa-external-link-alt"></i></button>
-                                <button id="copyVideoUrlButton" class="diag-button" title="Copy video URL"><i class="fas fa-copy"></i></button>
-                            </div>
-                        </div>
-                        <div class="diag-meta">
-                            <span><strong>Content</strong> <span id="videoDiagContentType">—</span></span>
-                            <span><strong>Bytes</strong> <span id="videoDiagBytes">—</span></span>
-                            <span><strong>FourCC</strong> <span id="videoDiagFourcc">—</span></span>
-                            <span><strong>Brand</strong> <span id="videoDiagMajor">—</span></span>
-                        </div>
-                        <details id="videoDiagDetails">
-                            <summary>Playback events</summary>
-                            <ul id="videoDiagEvents"></ul>
-                        </details>
+                        <div id="sceneIndicatorRow" class="scene-indicators"></div>
                     </div>
                 </div>
             </div>
@@ -197,45 +185,6 @@
         <footer class="footer">
             <p><i class="fas fa-rocket"></i> Learn 3X Faster. Save 80% KT Time.</p>
         </footer>
-    </div>
-
-    <div class="chat-widget" aria-live="polite">
-        <button type="button" id="chatToggleButton" class="chat-toggle" aria-expanded="false" aria-controls="chatPanel">
-            <i class="fas fa-robot"></i>
-            <span>Hello, I'm Q&amp;A bot</span>
-        </button>
-        <div id="chatPanel" class="chat-panel" role="dialog" aria-modal="false" aria-hidden="true" tabindex="-1">
-            <div class="chat-panel-card chatbot-card">
-                <div class="chat-panel-header">
-                    <div>
-                        <h3><i class="fas fa-robot"></i> Hello, I'm Q&amp;A bot</h3>
-                        <p>Select a processed document and ask a question to get instant answers grounded in the generated storyboard.</p>
-                    </div>
-                    <div class="chat-panel-actions">
-                        <button type="button" id="chatCloseButton" class="chat-close" aria-label="Close chat">
-                            <i class="fas fa-xmark"></i>
-                        </button>
-                    </div>
-                </div>
-                <div class="chat-panel-docpicker">
-                    <label for="chatDocSelect">Document</label>
-                    <div class="chat-panel-docpicker-row">
-                        <select id="chatDocSelect">
-                            <option value="" disabled selected>-- load documents --</option>
-                        </select>
-                        <button type="button" id="chatRefreshButton" class="icon-button" title="Refresh documents"><i class="fas fa-rotate"></i></button>
-                    </div>
-                </div>
-                <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
-                <form id="chatForm" class="chat-input-row">
-                    <input type="text" id="chatInput" placeholder="Ask about the selected document..." autocomplete="off" required />
-                    <button type="submit" class="primary-button">
-                        <i class="fas fa-paper-plane"></i>
-                    </button>
-                </form>
-                <p id="chatStatus" class="chat-status" role="status"></p>
-            </div>
-        </div>
     </div>
 
     <script src="script.js"></script>

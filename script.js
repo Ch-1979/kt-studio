@@ -792,10 +792,10 @@ function buildSceneFromText(text, idx) {
 function updateScene(index, options = {}) {
     if (!videoScenes.length) {
         elements.sceneBackdrop.style.background = createGradient(0);
-        elements.sceneBadge.textContent = '';
-        elements.sceneBadge.classList.add('hidden');
-        elements.sceneTitle.textContent = 'Awaiting storyboard';
-        elements.sceneText.textContent = 'Upload a document to generate AI-powered scenes.';
+        elements.sceneBadge.textContent = 'Welcome';
+        elements.sceneBadge.classList.remove('hidden');
+        elements.sceneTitle.textContent = 'Your AI storyboard will appear here';
+        elements.sceneText.textContent = 'Upload a KT document to generate scenes, narration, and a quiz tailored to your content. Once processing finishes, the full storyboard will play in this space.';
         elements.sceneKeywords.innerHTML = '';
         elements.sceneIndex.textContent = '0';
         elements.sceneCount.textContent = '0';

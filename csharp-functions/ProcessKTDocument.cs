@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Diagnostics;
@@ -20,6 +22,44 @@ namespace KTStudio.Functions;
 public class ProcessKTDocument
 {
     private static readonly HttpClient HttpClient = new();
+    private static readonly Regex SentenceSplitRegex = new(@"(?<=[\.\?!])\s+", RegexOptions.Compiled);
+    private static readonly Regex MultiWhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
+    private static readonly Regex BulletPrefixRegex = new(@"^\s*([\-\*•●]\s+)", RegexOptions.Compiled);
+    private static readonly Regex NonWordRegex = new(@"[^a-z0-9]+", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly string[] SubjectSeparators =
+    {
+        " consists of ",
+        " focuses on ",
+        " focus on ",
+        " is about ",
+        " is defined as ",
+        " is defined by ",
+        " is described as ",
+        " is described by ",
+        " is ",
+        " are ",
+        " includes ",
+        " contains ",
+        " covers ",
+        " requires ",
+        " ensures ",
+        " enables ",
+        " provides ",
+        " delivers ",
+        " supports ",
+        " means ",
+        " describes ",
+        " details ",
+        " explains ",
+        " outlines ",
+        " specifies ",
+        " highlights ",
+        " demonstrates ",
+        " shows ",
+        " allows ",
+        " helps ",
+        " uses "
+    };
 
     private readonly BlobServiceClient _blobServiceClient;
     private readonly ILogger<ProcessKTDocument> _logger;
@@ -132,16 +172,18 @@ public class ProcessKTDocument
         List<QuizQuestion> quiz;
         string summary;
 
-        if (generated != null && generated.Scenes.Any() && generated.Quiz.Any())
-        {
-            summary = generated.Summary;
-            scenes = generated.Scenes.Select((scene, idx) => SceneData.FromGeneration(scene, idx)).ToList();
-            quiz = generated.Quiz.Select((q, idx) => QuizQuestion.FromGeneration(q, idx)).ToList();
-        }
-        else
-        {
-            (summary, scenes, quiz) = BuildFallbackContent(normalizedText);
-        }
+            if (generated != null && generated.Scenes.Any() && generated.Quiz.Any())
+            {
+                summary = generated.Summary;
+                scenes = generated.Scenes.Select((scene, idx) => SceneData.FromGeneration(scene, idx)).ToList();
+                quiz = generated.Quiz.Select((q, idx) => QuizQuestion.FromGeneration(q, idx)).ToList();
+            }
+            else
+            {
+                (summary, scenes, quiz) = BuildFallbackContent(normalizedText);
+            }
+
+            quiz = EnsureQuizQuality(quiz, scenes, extraction, normalizedText);
 
         await PopulateSceneImagesAsync(docName, scenes);
 
@@ -238,6 +280,535 @@ public class ProcessKTDocument
 
             static string Clean(string token) => new string(token.Where(char.IsLetterOrDigit).ToArray());
         }
+    }
+
+    private List<QuizQuestion> EnsureQuizQuality(List<QuizQuestion> quiz, List<SceneData> scenes, DocumentExtractionResult? extraction, string normalizedText)
+    {
+        var facts = ExtractFactCandidates(extraction, scenes, normalizedText);
+        if (facts.Count == 0)
+        {
+            return quiz.Take(4).ToList();
+        }
+
+        var grounded = new List<QuizQuestion>();
+        var usedQuestionTexts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < quiz.Count; i++)
+        {
+            var normalized = NormalizeGeneratedQuestion(quiz[i], facts, normalizedText, grounded.Count + 1, usedQuestionTexts);
+            if (normalized != null)
+            {
+                grounded.Add(normalized);
+            }
+            if (grounded.Count >= 4)
+            {
+                break;
+            }
+        }
+
+        if (grounded.Count < 4)
+        {
+            var replacements = BuildQuizGroundedInDocument(facts, grounded.Count, usedQuestionTexts);
+            foreach (var question in replacements)
+            {
+                grounded.Add(question);
+                if (grounded.Count >= 4)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (grounded.Count < 4 && facts.Count > 0)
+        {
+            while (grounded.Count < 4)
+            {
+                var fact = facts[(grounded.Count) % facts.Count];
+                var filler = CreateSimpleFactQuestion(fact, grounded.Count + 1, usedQuestionTexts);
+                if (filler == null)
+                {
+                    break;
+                }
+                grounded.Add(filler);
+            }
+        }
+
+        if (grounded.Count < 4)
+        {
+            foreach (var item in quiz)
+            {
+                if (grounded.Count >= 4)
+                {
+                    break;
+                }
+
+                if (grounded.Any(g => string.Equals(g.Text, item.Text, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                var fallbackOptions = PrepareOptions(item.Options ?? new List<string>());
+                if (fallbackOptions.Count < 4)
+                {
+                    continue;
+                }
+
+                var correctedIndex = Math.Clamp(item.CorrectIndex, 0, fallbackOptions.Count - 1);
+                var explanation = string.IsNullOrWhiteSpace(item.Explanation)
+                    ? "Reference the uploaded document for the correct detail."
+                    : item.Explanation;
+
+                var id = item.Id ?? $"q{grounded.Count + 1}";
+                grounded.Add(new QuizQuestion(id, item.Text, fallbackOptions, correctedIndex, explanation));
+                usedQuestionTexts.Add(item.Text);
+            }
+        }
+
+        if (grounded.Count == 0 && quiz.Count > 0)
+        {
+            return quiz.Take(4).ToList();
+        }
+
+        return grounded.Take(4).ToList();
+    }
+
+    private QuizQuestion? CreateSimpleFactQuestion(string fact, int nextIndex, HashSet<string> usedQuestionTexts)
+    {
+        if (string.IsNullOrWhiteSpace(fact))
+        {
+            return null;
+        }
+
+        var questionText = "Which statement is supported by the document?";
+        if (!usedQuestionTexts.Add(questionText))
+        {
+            questionText = $"{questionText} #{nextIndex}";
+        }
+
+        var distractors = GenerateDistractorsFromFact(fact, 3);
+        if (distractors.Count < 3)
+        {
+            return null;
+        }
+
+        var options = new List<string> { TruncateOption(fact) };
+        options.AddRange(distractors.Take(3));
+        if (options.Count < 4)
+        {
+            return null;
+        }
+
+        var (shuffled, correctIndex) = RotateOptions(options);
+        var explanation = $"Reference: {fact}";
+        return new QuizQuestion($"q{nextIndex}", questionText, shuffled, correctIndex, explanation);
+    }
+
+    private QuizQuestion? NormalizeGeneratedQuestion(QuizQuestion source, IReadOnlyList<string> facts, string normalizedText, int nextIndex, HashSet<string> usedQuestionTexts)
+    {
+        if (source.Options == null || source.Options.Count == 0)
+        {
+            return null;
+        }
+
+        var options = PrepareOptions(source.Options);
+        if (options.Count < 4)
+        {
+            return null;
+        }
+
+        var correctIndex = Math.Clamp(source.CorrectIndex, 0, options.Count - 1);
+        var correctText = options[correctIndex];
+
+        var evidence = FindSupportingFact(correctText, facts, normalizedText);
+        if (evidence == null)
+        {
+            return null;
+        }
+
+        var questionText = string.IsNullOrWhiteSpace(source.Text) ? "Which statement is supported by the document?" : source.Text.Trim();
+        if (!usedQuestionTexts.Add(questionText))
+        {
+            questionText = $"{questionText} ({nextIndex})";
+            usedQuestionTexts.Add(questionText);
+        }
+
+        var explanation = string.IsNullOrWhiteSpace(source.Explanation)
+            ? $"Evidence from the document: {evidence}"
+            : AppendEvidence(source.Explanation, evidence);
+
+        var id = string.IsNullOrWhiteSpace(source.Id) ? $"q{nextIndex}" : source.Id;
+
+        return new QuizQuestion(id, questionText, options, correctIndex, explanation);
+    }
+
+    private static List<string> PrepareOptions(List<string> options)
+    {
+        var unique = options
+            .Where(o => !string.IsNullOrWhiteSpace(o))
+            .Select(o => o.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(4)
+            .ToList();
+
+        var fillerIndex = 0;
+        while (unique.Count < 4)
+        {
+            fillerIndex++;
+            unique.Add(fillerIndex switch
+            {
+                1 => "Not stated in the document",
+                2 => "Contradicted by the text",
+                3 => "Irrelevant detail",
+                _ => $"Alternative option {fillerIndex}"
+            });
+        }
+
+        return unique;
+    }
+
+    private static string AppendEvidence(string explanation, string evidence)
+    {
+        var trimmed = explanation.Trim();
+        if (trimmed.Contains(evidence, StringComparison.OrdinalIgnoreCase))
+        {
+            return trimmed;
+        }
+
+        if (!trimmed.EndsWith('.'))
+        {
+            trimmed += '.';
+        }
+
+        return $"{trimmed} Evidence: {evidence}";
+    }
+
+    private List<QuizQuestion> BuildQuizGroundedInDocument(IReadOnlyList<string> facts, int existingCount, HashSet<string> usedQuestionTexts)
+    {
+        var questions = new List<QuizQuestion>();
+        if (facts.Count == 0)
+        {
+            return questions;
+        }
+
+        var index = 0;
+        var attempts = 0;
+        while (questions.Count < 4 && attempts < facts.Count * 3)
+        {
+            var fact = facts[index % facts.Count];
+            index++;
+            var parts = ComposeQuestionParts(fact, facts);
+            if (parts == null)
+            {
+                attempts++;
+                continue;
+            }
+
+            var (questionText, correct, distractors) = parts.Value;
+            if (!usedQuestionTexts.Add(questionText))
+            {
+                questionText = $"{questionText} #{existingCount + questions.Count + 1}";
+            }
+
+            var options = new List<string> { correct };
+            options.AddRange(distractors.Take(3));
+
+            if (options.Count < 4)
+            {
+                continue;
+            }
+
+            var (shuffledOptions, correctIndex) = RotateOptions(options);
+            var explanation = $"Reference: {fact}";
+            var id = $"q{existingCount + questions.Count + 1}";
+
+            questions.Add(new QuizQuestion(id, questionText, shuffledOptions, correctIndex, explanation));
+
+            attempts++;
+        }
+
+        return questions;
+    }
+
+    private static (List<string> Options, int CorrectIndex) RotateOptions(List<string> options)
+    {
+        if (options.Count < 4)
+        {
+            return (options, 0);
+        }
+
+        var rotated = new List<string>(options);
+        var correctIndex = 0;
+
+        if (options.Count == 4)
+        {
+            var rotation = options[0].Length % 4;
+            if (rotation > 0)
+            {
+                rotated = options.Skip(rotation).Concat(options.Take(rotation)).ToList();
+                correctIndex = (4 - rotation) % 4;
+            }
+        }
+
+        return (rotated, correctIndex);
+    }
+
+    private static (string Question, string Correct, List<string> Distractors)? ComposeQuestionParts(string fact, IReadOnlyList<string> allFacts)
+    {
+        if (string.IsNullOrWhiteSpace(fact))
+        {
+            return null;
+        }
+
+        var subject = string.Empty;
+        var remainder = fact;
+        foreach (var separator in SubjectSeparators)
+        {
+            var index = fact.IndexOf(separator, StringComparison.OrdinalIgnoreCase);
+            if (index > 10)
+            {
+                subject = fact[..index].Trim();
+                remainder = fact[(index + separator.Length)..].Trim();
+                break;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(subject))
+        {
+            subject = string.Join(' ', fact.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(6));
+            remainder = fact;
+        }
+
+        if (string.IsNullOrWhiteSpace(remainder) || remainder.Length < 15)
+        {
+            return null;
+        }
+
+        var questionText = $"According to the document, what about {subject}?";
+        var correct = TruncateOption(remainder);
+
+        var distractors = new List<string>();
+        foreach (var alt in allFacts)
+        {
+            if (string.Equals(alt, fact, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            var option = TruncateOption(alt);
+            if (!distractors.Any(existing => string.Equals(existing, option, StringComparison.OrdinalIgnoreCase)))
+            {
+                distractors.Add(option);
+            }
+            if (distractors.Count >= 3)
+            {
+                break;
+            }
+        }
+
+        if (distractors.Count < 3)
+        {
+            distractors.AddRange(GenerateDistractorsFromFact(fact, 3 - distractors.Count));
+        }
+
+        if (distractors.Count < 3)
+        {
+            return null;
+        }
+
+        return (questionText, correct, distractors);
+    }
+
+    private static List<string> GenerateDistractorsFromFact(string fact, int needed)
+    {
+        var distractors = new List<string>();
+        if (needed <= 0)
+        {
+            return distractors;
+        }
+
+        var numberMatches = Regex.Matches(fact, @"\d+");
+        if (numberMatches.Count > 0)
+        {
+            foreach (Match match in numberMatches)
+            {
+                if (!int.TryParse(match.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+                {
+                    continue;
+                }
+                var mutated = fact.Replace(match.Value, (value + 1).ToString(CultureInfo.InvariantCulture));
+                distractors.Add(TruncateOption(mutated));
+                if (distractors.Count >= needed)
+                {
+                    return distractors;
+                }
+            }
+        }
+
+        var replacements = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["must"] = "should consider",
+            ["required"] = "optional",
+            ["enables"] = "prevents",
+            ["ensures"] = "cannot guarantee",
+            ["increase"] = "reduce",
+            ["improve"] = "weaken",
+            ["supports"] = "ignores",
+            ["recommended"] = "discouraged"
+        };
+
+        foreach (var kvp in replacements)
+        {
+            if (fact.Contains(kvp.Key, StringComparison.OrdinalIgnoreCase))
+            {
+                var mutated = Regex.Replace(fact, kvp.Key, kvp.Value, RegexOptions.IgnoreCase);
+                distractors.Add(TruncateOption(mutated));
+                if (distractors.Count >= needed)
+                {
+                    return distractors;
+                }
+            }
+        }
+
+        while (distractors.Count < needed)
+        {
+            distractors.Add("Statement not aligned with the document." + (distractors.Count + 1));
+        }
+
+        return distractors;
+    }
+
+    private static string TruncateOption(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return text;
+        }
+
+        var cleaned = MultiWhitespaceRegex.Replace(text.Trim(), " ");
+        return cleaned.Length <= 120 ? cleaned : cleaned[..120].TrimEnd() + "...";
+    }
+
+    private string? FindSupportingFact(string target, IReadOnlyList<string> facts, string normalizedText)
+    {
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            return null;
+        }
+
+        var normalizedTarget = NormalizeForComparison(target);
+        if (string.IsNullOrWhiteSpace(normalizedTarget))
+        {
+            return null;
+        }
+
+        foreach (var fact in facts)
+        {
+            var normalizedFact = NormalizeForComparison(fact);
+            var overlap = ComputeOverlap(normalizedTarget, normalizedFact);
+            if (overlap >= 0.4)
+            {
+                return fact;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedText) && normalizedText.IndexOf(target, StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return TruncateOption(target);
+        }
+
+        return null;
+    }
+
+    private static double ComputeOverlap(string a, string b)
+    {
+        var tokensA = Tokenize(a);
+        var tokensB = Tokenize(b);
+        if (tokensA.Count == 0 || tokensB.Count == 0)
+        {
+            return 0;
+        }
+
+        var matchCount = tokensA.Count(token => tokensB.Contains(token));
+        return (double)matchCount / tokensA.Count;
+    }
+
+    private static List<string> Tokenize(string text)
+    {
+        return NonWordRegex.Split(text.ToLowerInvariant())
+            .Where(token => token.Length > 3)
+            .Distinct()
+            .ToList();
+    }
+
+    private static string NormalizeForComparison(string text)
+    {
+        var collapsed = MultiWhitespaceRegex.Replace(text.ToLowerInvariant(), " ").Trim();
+        return NonWordRegex.Replace(collapsed, " ").Trim();
+    }
+
+    private List<string> ExtractFactCandidates(DocumentExtractionResult? extraction, List<SceneData> scenes, string normalizedText)
+    {
+        var candidates = new List<string>();
+
+        if (extraction?.Segments != null)
+        {
+            foreach (var segment in extraction.Segments)
+            {
+                candidates.AddRange(SplitIntoSentences(segment));
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedText))
+        {
+            candidates.AddRange(SplitIntoSentences(normalizedText));
+        }
+
+        foreach (var scene in scenes)
+        {
+            if (!string.IsNullOrWhiteSpace(scene.Narration))
+            {
+                candidates.Add(scene.Narration);
+            }
+        }
+
+        var facts = new List<string>();
+        foreach (var candidate in candidates)
+        {
+            var cleaned = BulletPrefixRegex.Replace(candidate.Trim(), string.Empty);
+            cleaned = MultiWhitespaceRegex.Replace(cleaned, " ");
+            if (cleaned.Length < 35 || cleaned.Length > 260)
+            {
+                continue;
+            }
+
+            if (cleaned.Split(' ').Length < 6)
+            {
+                continue;
+            }
+
+            if (!facts.Any(existing => string.Equals(existing, cleaned, StringComparison.OrdinalIgnoreCase)))
+            {
+                facts.Add(cleaned);
+            }
+
+            if (facts.Count >= 120)
+            {
+                break;
+            }
+        }
+
+        return facts;
+    }
+
+    private IEnumerable<string> SplitIntoSentences(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return Enumerable.Empty<string>();
+        }
+
+        return SentenceSplitRegex.Split(text)
+            .Select(sentence => sentence.Trim())
+            .Where(sentence => !string.IsNullOrWhiteSpace(sentence));
     }
 
     private async Task PopulateSceneImagesAsync(string docName, List<SceneData> scenes)

@@ -1056,12 +1056,17 @@ document.addEventListener('DOMContentLoaded', () => {
 function renderQuiz(questions) {
     const container = elements.activeQuiz;
     container.innerHTML = '';
+    
+    // Store all questions but hide them
     questions.forEach((q, idx) => {
         const block = document.createElement('div');
         block.className = 'question-block';
         block.setAttribute('data-question-id', q.id || `q${idx+1}`);
+        block.setAttribute('data-question-index', idx);
+        block.style.display = idx === 0 ? 'block' : 'none'; // Show only first question
         block.innerHTML = `
-            <div class="question"><p class="question-text">${idx+1}. ${q.text}</p></div>
+            <div class="question"><p class="question-text">Question ${idx+1} of ${questions.length}</p></div>
+            <div class="question"><p class="question-title">${q.text}</p></div>
             <div class="quiz-options">
                 ${q.options.map((opt,i) => `
                 <label class="quiz-option">
@@ -1072,6 +1077,56 @@ function renderQuiz(questions) {
         `;
         container.appendChild(block);
     });
+    
+    // Add navigation controls
+    const navControls = document.createElement('div');
+    navControls.className = 'quiz-navigation';
+    navControls.innerHTML = `
+        <button id="quizPrevBtn" class="quiz-nav-button" disabled>
+            <i class="fas fa-chevron-left"></i> Previous
+        </button>
+        <span id="quizProgressText" class="quiz-progress-text">Question 1 of ${questions.length}</span>
+        <button id="quizNextBtn" class="quiz-nav-button">
+            Next <i class="fas fa-chevron-right"></i>
+        </button>
+    `;
+    container.appendChild(navControls);
+    
+    // Initialize quiz navigation state
+    let currentQuestionIndex = 0;
+    
+    // Navigation event handlers
+    document.getElementById('quizPrevBtn').addEventListener('click', () => {
+        if (currentQuestionIndex > 0) {
+            showQuizQuestion(currentQuestionIndex - 1);
+        }
+    });
+    
+    document.getElementById('quizNextBtn').addEventListener('click', () => {
+        if (currentQuestionIndex < questions.length - 1) {
+            showQuizQuestion(currentQuestionIndex + 1);
+        }
+    });
+    
+    function showQuizQuestion(index) {
+        // Hide all questions
+        container.querySelectorAll('.question-block').forEach(block => {
+            block.style.display = 'none';
+        });
+        
+        // Show selected question
+        const targetBlock = container.querySelector(`[data-question-index="${index}"]`);
+        if (targetBlock) {
+            targetBlock.style.display = 'block';
+            currentQuestionIndex = index;
+            
+            // Update navigation buttons
+            document.getElementById('quizPrevBtn').disabled = index === 0;
+            document.getElementById('quizNextBtn').disabled = index === questions.length - 1;
+            document.getElementById('quizProgressText').textContent = `Question ${index + 1} of ${questions.length}`;
+        }
+    }
+    
     elements.submitQuizButton.style.display = 'block';
 }
 

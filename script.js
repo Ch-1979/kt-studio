@@ -142,6 +142,35 @@ function initializeEventListeners() {
             closeChatbot();
         }
     });
+
+    // Tutorial video link
+    const tutorialLink = document.getElementById('tutorialLink');
+    if (tutorialLink) {
+        tutorialLink.addEventListener('click', function(event) {
+            event.preventDefault();
+            toggleTutorialVideo();
+        });
+    }
+}
+
+function toggleTutorialVideo() {
+    const videoPlayer = document.getElementById('tutorialVideoPlayer');
+    const video = document.getElementById('tutorialVideo');
+    const link = document.getElementById('tutorialLink');
+    
+    if (videoPlayer && video && link) {
+        if (videoPlayer.style.display === 'none') {
+            videoPlayer.style.display = 'block';
+            link.innerHTML = '<i class="fas fa-times-circle"></i> Hide tutorial video';
+            setTimeout(() => {
+                videoPlayer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 100);
+        } else {
+            video.pause();
+            videoPlayer.style.display = 'none';
+            link.innerHTML = '<i class="fas fa-play-circle"></i> Click here to watch tutorial video';
+        }
+    }
 }
 
 // Upload functionality

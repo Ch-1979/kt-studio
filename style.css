@@ -1036,6 +1036,33 @@ body {
     font-size: 20px;
 }
 
+.tutorial-video-player {
+    margin-top: 24px;
+    background: #111827;
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 0 20px 50px rgba(15, 23, 42, 0.3);
+    animation: slideDown 0.3s ease-out;
+}
+
+.tutorial-video {
+    width: 100%;
+    border-radius: 12px;
+    display: block;
+    background: #000;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
 @media (max-width: 768px) {
     .tutorial-section {
         padding: 20px 15px;
@@ -1054,6 +1081,10 @@ body {
 
     .tutorial-link {
         font-size: 14px;
+    }
+
+    .tutorial-video-player {
+        padding: 12px;
     }
 }
 

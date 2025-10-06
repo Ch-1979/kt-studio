@@ -87,12 +87,6 @@ const chatbotState = {
 
 let loadedVideoData = null; // stores currently loaded generated video JSON
 let loadedQuizData = null;  // stores currently loaded generated quiz JSON
-let quizState = {
-    questions: [],
-    currentQuestionIndex: 0,
-    userAnswers: {},
-    isSubmitted: false
-};
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', function() {
@@ -386,36 +380,67 @@ function handleQuizOptionSelection() {
 }
 
 function handleSubmitQuiz() {
-    // Check if all questions are answered
-    const totalQuestions = quizState.questions.length;
-    const answeredCount = Object.keys(quizState.userAnswers).length;
-    
-    if (answeredCount < totalQuestions) {
-        showQuizResult({ 
-            message: `Please answer all questions. You've answered ${answeredCount} of ${totalQuestions}.`, 
-            type: 'warning' 
-        });
+    const activeQuizContainer = document.getElementById('activeQuiz');
+    const questionBlocks = activeQuizContainer.querySelectorAll('[data-question-id]');
+    if (!questionBlocks.length) {
+        showQuizResult({ message: 'Quiz not loaded.', type: 'incorrect' });
         return;
     }
-    
-    quizState.isSubmitted = true;
-    
-    // Calculate score
-    let correctCount = 0;
-    quizState.questions.forEach((q, idx) => {
-        const qId = q.id || `q${idx + 1}`;
-        const userAnswer = quizState.userAnswers[qId];
-        const correctAnswer = q.options[q.correctIndex];
-        
-        if (userAnswer === correctAnswer) {
-            correctCount++;
+
+    let allAnswered = true;
+    questionBlocks.forEach(block => {
+        const selected = block.querySelector('input[type="radio"]:checked');
+        if (!selected) {
+            allAnswered = false;
         }
     });
-    
+
+    if (!allAnswered) {
+        showQuizResult({ message: 'Please answer all questions.', type: 'warning' });
+        return;
+    }
+
+    let correctCount = 0;
+    const totalQuestions = questionBlocks.length;
+
+    questionBlocks.forEach(block => {
+        block.querySelectorAll('.quiz-option').forEach(option => {
+            option.classList.remove('correct-choice', 'incorrect-choice', 'selected-choice');
+        });
+
+        const options = Array.from(block.querySelectorAll('input[type="radio"]'));
+        const selected = block.querySelector('input[type="radio"]:checked');
+        const correctOption = options.find(opt => opt.dataset.correct === 'true');
+
+        if (correctOption) {
+            const correctLabel = correctOption.closest('.quiz-option');
+            if (correctLabel) {
+                correctLabel.classList.add('correct-choice');
+            }
+        }
+
+        if (selected) {
+            const selectedLabel = selected.closest('.quiz-option');
+            if (selectedLabel) {
+                selectedLabel.classList.add('selected-choice');
+                if (selected.dataset.correct === 'true') {
+                    correctCount += 1;
+                    selectedLabel.classList.add('correct-choice');
+                } else {
+                    selectedLabel.classList.add('incorrect-choice');
+                }
+            }
+        }
+
+        options.forEach(opt => {
+            opt.disabled = true;
+        });
+    });
+
     const scorePercent = Math.round((correctCount / totalQuestions) * 100);
     let message;
     let type;
-    
+
     if (scorePercent >= 70) {
         message = 'Great job! You passed the knowledge check.';
         type = 'correct';
@@ -426,7 +451,7 @@ function handleSubmitQuiz() {
         message = 'Some answers are incorrect. Review the material and try again.';
         type = 'incorrect';
     }
-    
+
     showQuizResult({
         message,
         type,
@@ -434,62 +459,7 @@ function handleSubmitQuiz() {
         correctCount,
         totalQuestions
     });
-    
-    // Re-render current question with results
-    renderCurrentQuestionWithResults();
-    
-    // Update submit button
-    elements.submitQuizButton.textContent = 'Review Answers';
-    elements.submitQuizButton.onclick = () => {
-        // Allow navigation through results
-        quizState.currentQuestionIndex = 0;
-        renderCurrentQuestionWithResults();
-    };
-}
 
-function renderCurrentQuestionWithResults() {
-    const currentQ = quizState.questions[quizState.currentQuestionIndex];
-    const questionContainer = document.getElementById('currentQuestionContainer');
-    const qId = currentQ.id || `q${quizState.currentQuestionIndex + 1}`;
-    const userAnswer = quizState.userAnswers[qId];
-    const correctAnswer = currentQ.options[currentQ.correctIndex];
-    
-    if (!questionContainer) return;
-    
-    questionContainer.innerHTML = `
-        <div class="question-block active-question" data-question-id="${qId}">
-            <div class="question">
-                <p class="question-text">Question ${quizState.currentQuestionIndex + 1} of ${quizState.questions.length}</p>
-                <h4 class="question-title">${currentQ.text}</h4>
-            </div>
-            <div class="quiz-options">
-                ${currentQ.options.map((opt, i) => {
-                    const isUserAnswer = userAnswer === opt;
-                    const isCorrect = opt === correctAnswer;
-                    let classes = 'quiz-option';
-                    
-                    if (isCorrect) {
-                        classes += ' correct-choice';
-                    }
-                    if (isUserAnswer && !isCorrect) {
-                        classes += ' incorrect-choice';
-                    }
-                    if (isUserAnswer) {
-                        classes += ' selected-choice';
-                    }
-                    
-                    return `
-                    <label class="${classes}">
-                        <input type="radio" name="${qId}" value="${opt}" ${isUserAnswer ? 'checked' : ''} disabled>
-                        <span class="option-text">${String.fromCharCode(65 + i)}) ${opt}</span>
-                    </label>`;
-                }).join('')}
-            </div>
-        </div>
-    `;
-    
-    updateQuizNavigation();
-}
     elements.submitQuizButton.style.display = 'none';
 }
 
@@ -1084,99 +1054,25 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function renderQuiz(questions) {
-    quizState.questions = questions;
-    quizState.currentQuestionIndex = 0;
-    quizState.userAnswers = {};
-    quizState.isSubmitted = false;
-    
     const container = elements.activeQuiz;
     container.innerHTML = '';
-    
-    // Create quiz navigation container
-    const quizNavContainer = document.createElement('div');
-    quizNavContainer.className = 'quiz-navigation-container';
-    quizNavContainer.innerHTML = `
-        <div id="currentQuestionContainer" class="current-question-container"></div>
-        <div class="quiz-nav-controls">
-            <button id="prevQuizButton" class="quiz-nav-btn" disabled>
-                <i class="fas fa-arrow-left"></i> Previous
-            </button>
-            <span id="quizProgress" class="quiz-progress">1 of ${questions.length}</span>
-            <button id="nextQuizButton" class="quiz-nav-btn">
-                Next <i class="fas fa-arrow-right"></i>
-            </button>
-        </div>
-    `;
-    
-    container.appendChild(quizNavContainer);
-    
-    // Render first question
-    renderCurrentQuestion();
-    
-    // Add navigation event listeners
-    document.getElementById('prevQuizButton').addEventListener('click', () => navigateQuiz(-1));
-    document.getElementById('nextQuizButton').addEventListener('click', () => navigateQuiz(1));
-    
-    elements.submitQuizButton.style.display = 'block';
-    elements.submitQuizButton.textContent = 'Submit Quiz';
-}
-
-function renderCurrentQuestion() {
-    const currentQ = quizState.questions[quizState.currentQuestionIndex];
-    const questionContainer = document.getElementById('currentQuestionContainer');
-    const qId = currentQ.id || `q${quizState.currentQuestionIndex + 1}`;
-    
-    if (!questionContainer) return;
-    
-    questionContainer.innerHTML = `
-        <div class="question-block active-question" data-question-id="${qId}">
-            <div class="question">
-                <p class="question-text">Question ${quizState.currentQuestionIndex + 1} of ${quizState.questions.length}</p>
-                <h4 class="question-title">${currentQ.text}</h4>
-            </div>
+    questions.forEach((q, idx) => {
+        const block = document.createElement('div');
+        block.className = 'question-block';
+        block.setAttribute('data-question-id', q.id || `q${idx+1}`);
+        block.innerHTML = `
+            <div class="question"><p class="question-text">${idx+1}. ${q.text}</p></div>
             <div class="quiz-options">
-                ${currentQ.options.map((opt, i) => {
-                    const isChecked = quizState.userAnswers[qId] === opt ? 'checked' : '';
-                    return `
-                    <label class="quiz-option ${quizState.userAnswers[qId] === opt ? 'selected-choice' : ''}">
-                        <input type="radio" name="${qId}" value="${opt}" data-correct="${i === currentQ.correctIndex}" ${isChecked}>
-                        <span class="option-text">${String.fromCharCode(65 + i)}) ${opt}</span>
-                    </label>`;
-                }).join('')}
+                ${q.options.map((opt,i) => `
+                <label class="quiz-option">
+                    <input type="radio" name="${q.id || `q${idx+1}`}" value="${opt}" data-correct="${i === q.correctIndex}">
+                    <span class="option-text">${String.fromCharCode(65+i)}) ${opt}</span>
+                </label>`).join('')}
             </div>
-        </div>
-    `;
-    
-    // Add change listener to save answer
-    questionContainer.querySelectorAll('input[type="radio"]').forEach(radio => {
-        radio.addEventListener('change', (e) => {
-            quizState.userAnswers[qId] = e.target.value;
-            // Update visual selection
-            questionContainer.querySelectorAll('.quiz-option').forEach(opt => opt.classList.remove('selected-choice'));
-            e.target.closest('.quiz-option').classList.add('selected-choice');
-        });
+        `;
+        container.appendChild(block);
     });
-    
-    updateQuizNavigation();
-}
-
-function navigateQuiz(direction) {
-    const newIndex = quizState.currentQuestionIndex + direction;
-    
-    if (newIndex >= 0 && newIndex < quizState.questions.length) {
-        quizState.currentQuestionIndex = newIndex;
-        renderCurrentQuestion();
-    }
-}
-
-function updateQuizNavigation() {
-    const prevBtn = document.getElementById('prevQuizButton');
-    const nextBtn = document.getElementById('nextQuizButton');
-    const progress = document.getElementById('quizProgress');
-    
-    if (prevBtn) prevBtn.disabled = quizState.currentQuestionIndex === 0;
-    if (nextBtn) nextBtn.disabled = quizState.currentQuestionIndex === quizState.questions.length - 1;
-    if (progress) progress.textContent = `${quizState.currentQuestionIndex + 1} of ${quizState.questions.length}`;
+    elements.submitQuizButton.style.display = 'block';
 }
 
 // UI Update function
